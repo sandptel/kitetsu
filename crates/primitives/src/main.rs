@@ -2,7 +2,7 @@
 //! Spawns a single iced_layershell surface anchored top-left, renders one
 //! dummy card, and exits cleanly. No IPC, no LLM, no daemon — layout only.
 
-mod ui;
+mod card;
 
 use iced::{Color, Element, Task, theme};
 use iced_layershell::application;
@@ -10,7 +10,7 @@ use iced_layershell::reexport::{Anchor, KeyboardInteractivity};
 use iced_layershell::settings::{LayerShellSettings, Settings};
 use iced_layershell::to_layer_message;
 
-use ui::card::Card;
+use card::Card;
 
 fn main() -> iced_layershell::Result {
     application(init, namespace, update, view)
@@ -80,5 +80,5 @@ fn update(_app: &mut App, _msg: Message) -> Task<Message> {
 
 /// View — delegates entirely to the card module.
 fn view(app: &App) -> Element<'_, Message> {
-    ui::card::view(&app.card)
+    card::view(&app.card)
 }
