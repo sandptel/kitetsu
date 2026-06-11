@@ -2,7 +2,7 @@
 //!
 //! Defines the public enum that callers use to choose a backend, plus the
 //! internal `LoadedModel` that wraps the live engine handle. `load()` is the
-//! only place that touches `transcribe-rs` constructors; `engine.rs` owns the
+//! only place that touches backend constructors; `engine.rs` owns the
 //! inference call. Does no audio I/O.
 
 use std::path::PathBuf;
@@ -54,7 +54,7 @@ impl AudioModel {
             return self;
         }
         match &self {
-            AudioModel::Default => self, // can't fall back further
+            AudioModel::Default => self,
             _ => {
                 warn!(
                     model = ?self,
@@ -102,20 +102,51 @@ impl AudioModel {
 
 /// A loaded speech-recognition engine ready for inference.
 /// Variants are cfg-gated; when no backend feature is enabled this enum is
-/// uninhabited (impossible to construct, so `transcribe_samples` is unreachable).
+/// uninhabited (impossible to construct, so inference paths are unreachable).
 pub(crate) enum LoadedModel {
     #[cfg(feature = "whisper")]
-    Whisper(transcribe_rs::whisper_cpp::WhisperEngine),
+    Whisper(WhisperModel),
+}
+
+/// Owns a whisper.cpp inference state. `WhisperState` holds an `Arc` to the
+/// inner context, so the C allocations stay alive independently of the
+/// `WhisperContext` that created it.
+#[cfg(feature = "whisper")]
+pub(crate) struct WhisperModel {
+    pub(crate) state: whisper_rs::WhisperState,
+    pub(crate) n_threads: i32,
 }
 
 // ── Backend constructors (cfg-gated pairs) ────────────────────────────────────
 
 #[cfg(feature = "whisper")]
 fn load_whisper(path: PathBuf) -> Result<LoadedModel, ListenerError> {
-    use transcribe_rs::whisper_cpp::WhisperEngine;
-    WhisperEngine::load(&path)
-        .map(LoadedModel::Whisper)
-        .map_err(|e| ListenerError::ModelUnavailable(e.to_string()))
+    use whisper_rs::{WhisperContext, WhisperContextParameters};
+
+    // Route all C-level whisper.cpp / GGML logs through the Rust `log` crate.
+    // With no log_backend or tracing_backend features enabled in whisper-rs,
+    // the hook is a no-op sink — silences the verbose beam-search C output.
+    // `install_logging_hooks` is idempotent; no Once guard needed.
+    whisper_rs::install_logging_hooks();
+
+    let n_threads = std::thread::available_parallelism()
+        .map(|n| n.get() as i32)
+        .unwrap_or(4)
+        .min(8);
+
+    tracing::info!(path = %path.display(), n_threads, "loading whisper model");
+
+    let ctx = WhisperContext::new_with_params(&path, WhisperContextParameters::default())
+        .map_err(|e| ListenerError::ModelUnavailable(e.to_string()))?;
+
+    // `create_state` clones the Arc inside `ctx`; dropping `ctx` here is safe.
+    let state = ctx
+        .create_state()
+        .map_err(|e| ListenerError::ModelUnavailable(e.to_string()))?;
+
+    tracing::info!(path = %path.display(), "whisper model ready");
+
+    Ok(LoadedModel::Whisper(WhisperModel { state, n_threads }))
 }
 
 #[cfg(not(feature = "whisper"))]

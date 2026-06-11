@@ -18,9 +18,11 @@ mod transcriber;
 
 use std::time::Duration;
 
-pub use capture::{CaptureConfig, Devices, capture_to_wav, discover_default_devices};
+pub use capture::{
+    CaptureConfig, Devices, Recorder, RecordingHandle, capture_to_wav, discover_default_devices,
+};
 pub use error::ListenerError;
-pub use transcriber::AudioModel;
+pub use transcriber::{AudioModel, Transcriber};
 
 // ── Sink selection types ──────────────────────────────────────────────────────
 
@@ -68,7 +70,7 @@ pub async fn transcribe(sink: AudioSink, model: AudioModel) -> Result<String, Li
             Duration::from_secs(capture::DEFAULT_CAPTURE_SECS),
         )?;
         let mut loaded = model.load()?;
-        transcriber::transcribe_samples(&mut loaded, &samples)
+        transcriber::transcribe_samples(&mut loaded, &samples, None)
     })
     .await
     .map_err(ListenerError::join)?

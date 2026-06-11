@@ -10,6 +10,10 @@
 
 use std::io::Write as _;
 use std::path::Path;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
 use std::time::{Duration, Instant};
 
 use libpulse_binding::sample::{Format, Spec};
@@ -211,6 +215,115 @@ pub fn capture_samples(
 
     info!(label, sample_count = samples.len(), "STT capture complete");
 
+    Ok(samples)
+}
+
+// ── Stop-on-signal recorder ───────────────────────────────────────────────────
+
+/// Captures 16 kHz mono audio on a dedicated thread until the associated
+/// [`RecordingHandle`] is stopped. Unlike [`capture_samples`], recording
+/// duration is open-ended — the caller decides when to stop.
+pub struct Recorder {
+    device: String,
+    label: &'static str,
+}
+
+impl Recorder {
+    /// Create a recorder for the given PulseAudio device name.
+    pub fn new(device: String, label: &'static str) -> Self {
+        Self { device, label }
+    }
+
+    /// Spawn the capture thread and return a handle for stopping it.
+    pub fn start(self) -> RecordingHandle {
+        let stop = Arc::new(AtomicBool::new(false));
+        let sample_count = Arc::new(AtomicUsize::new(0));
+        let stop_flag = Arc::clone(&stop);
+        let count_flag = Arc::clone(&sample_count);
+
+        let thread = std::thread::spawn(move || {
+            record_until_stop(&self.device, self.label, &stop_flag, &count_flag)
+        });
+
+        RecordingHandle {
+            stop,
+            sample_count,
+            thread,
+        }
+    }
+}
+
+/// Live handle returned by [`Recorder::start`].
+///
+/// Call [`stop`][RecordingHandle::stop] to signal the capture thread and collect
+/// the samples. The PulseAudio read chunk is ~256 ms at 16 kHz, so the thread
+/// finishes within one chunk after the stop flag is set.
+pub struct RecordingHandle {
+    stop: Arc<AtomicBool>,
+    sample_count: Arc<AtomicUsize>,
+    thread: std::thread::JoinHandle<Result<Vec<f32>, ListenerError>>,
+}
+
+impl RecordingHandle {
+    /// Signal the capture thread to stop and block until it returns the samples.
+    pub fn stop(self) -> Result<Vec<f32>, ListenerError> {
+        self.stop.store(true, Ordering::Release);
+        self.thread.join().expect("recorder thread panicked")
+    }
+
+    /// Approximate number of samples captured so far (lock-free, relaxed read).
+    pub fn sample_count(&self) -> usize {
+        self.sample_count.load(Ordering::Relaxed)
+    }
+}
+
+fn record_until_stop(
+    device: &str,
+    label: &'static str,
+    stop: &AtomicBool,
+    sample_count: &AtomicUsize,
+) -> Result<Vec<f32>, ListenerError> {
+    const RATE_16K: u32 = 16_000;
+
+    let spec = Spec {
+        format: Format::S16le,
+        rate: RATE_16K,
+        channels: 1,
+    };
+
+    info!(label, device, "opening stop-on-signal capture stream");
+
+    let simple = Simple::new(
+        None,
+        "kitetsu",
+        Direction::Record,
+        Some(device),
+        label,
+        &spec,
+        None,
+        None,
+    )
+    .map_err(|_| ListenerError::ConnectFailed("could not open 16 kHz PulseAudio record stream"))?;
+
+    info!(label, "recording started — waiting for stop signal");
+
+    // S16LE mono: 2 bytes per sample. Each read blocks ~256 ms at 16 kHz.
+    const CHUNK_SAMPLES: usize = 4096;
+    let mut buf = vec![0u8; CHUNK_SAMPLES * 2];
+    let mut samples: Vec<f32> = Vec::new();
+
+    while !stop.load(Ordering::Acquire) {
+        simple
+            .read(&mut buf)
+            .map_err(|_| ListenerError::CaptureFailed("PulseAudio read returned an error"))?;
+        samples.extend(
+            buf.chunks_exact(2)
+                .map(|b| f32::from(i16::from_le_bytes([b[0], b[1]])) / 32_768.0),
+        );
+        sample_count.store(samples.len(), Ordering::Relaxed);
+    }
+
+    info!(label, sample_count = samples.len(), "recording stopped");
     Ok(samples)
 }
 

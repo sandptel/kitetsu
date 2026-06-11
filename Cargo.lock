@@ -1933,6 +1933,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "transcribe-rs",
+ "whisper-rs",
 ]
 
 [[package]]
@@ -4148,7 +4149,6 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "ureq",
- "whisper-rs",
 ]
 
 [[package]]

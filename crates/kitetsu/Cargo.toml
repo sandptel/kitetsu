@@ -1,5 +1,5 @@
 [package]
-name    = "kitetsu"
+name = "kitetsu"
 version = "0.1.0"
 edition = "2024"
 
@@ -9,25 +9,24 @@ path = "src/lib.rs"
 
 [features]
 # Only whisper is wired now; whisperfile/onnx compile but return BackendNotCompiled.
-default      = ["whisper"]
-whisper      = ["dep:transcribe-rs", "transcribe-rs/whisper-cpp"]
-whisperfile  = ["dep:transcribe-rs", "transcribe-rs/whisperfile"]
-onnx         = ["dep:transcribe-rs", "transcribe-rs/onnx"]
+default = ["whisper"]
+whisper = ["dep:whisper-rs"]
+whisperfile = ["dep:transcribe-rs", "transcribe-rs/whisperfile"]
+onnx = ["dep:transcribe-rs", "transcribe-rs/onnx"]
 
 [dependencies]
 # PulseAudio / PipeWire-pulse audio capture — §5.1 table.
-# libpulse-binding is the base crate that provides Sample::Spec, Direction,
-# Context, and the standard Mainloop needed for device introspection.
-# libpulse-simple-binding provides the high-level blocking record API.
-libpulse-binding        = "2"
+libpulse-binding = "2"
 libpulse-simple-binding = "2"
 
-# Speech-recognition backends — §5.1 table (Decision #19).
-# Optional: only compiled when a backend feature is active.
+# Direct whisper.cpp bindings — used for the `whisper` feature (Decision #20).
+# transcribe-rs is kept only for future whisperfile/onnx backends (Decision #19).
+whisper-rs = { version = "0.16", default-features = false, optional = true }
 transcribe-rs = { version = "0.3", default-features = false, optional = true }
 
 # Async runtime for spawn_blocking (capture + inference stay on blocking threads).
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+# `time` is needed for the progress-polling sleep in the example and future UI pipe.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 
 # Structured logging — §5.1 table.
 tracing = "0.1"
@@ -38,4 +37,4 @@ thiserror = "2"
 [dev-dependencies]
 # Used only at binary edges (examples) where anyhow is allowed.
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-anyhow             = "1"
+anyhow = "1"
