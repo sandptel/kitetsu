@@ -7,6 +7,13 @@ edition = "2024"
 name = "kitetsu"
 path = "src/lib.rs"
 
+[features]
+# Only whisper is wired now; whisperfile/onnx compile but return BackendNotCompiled.
+default      = ["whisper"]
+whisper      = ["dep:transcribe-rs", "transcribe-rs/whisper-cpp"]
+whisperfile  = ["dep:transcribe-rs", "transcribe-rs/whisperfile"]
+onnx         = ["dep:transcribe-rs", "transcribe-rs/onnx"]
+
 [dependencies]
 # PulseAudio / PipeWire-pulse audio capture — §5.1 table.
 # libpulse-binding is the base crate that provides Sample::Spec, Direction,
@@ -15,6 +22,13 @@ path = "src/lib.rs"
 libpulse-binding        = "2"
 libpulse-simple-binding = "2"
 
+# Speech-recognition backends — §5.1 table (Decision #19).
+# Optional: only compiled when a backend feature is active.
+transcribe-rs = { version = "0.3", default-features = false, optional = true }
+
+# Async runtime for spawn_blocking (capture + inference stay on blocking threads).
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
 # Structured logging — §5.1 table.
 tracing = "0.1"
 
@@ -22,6 +36,6 @@ tracing = "0.1"
 thiserror = "2"
 
 [dev-dependencies]
-# Used only by the capture_audio example (the binary edge where anyhow is allowed).
+# Used only at binary edges (examples) where anyhow is allowed.
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow             = "1"

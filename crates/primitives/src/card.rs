@@ -11,7 +11,10 @@ use iced::{
 use crate::Message;
 
 // Assets embedded at compile time — avoids runtime working-directory dependency.
-const LOGO_SVG: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/logo-gemini.svg"));
+const LOGO_SVG: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/logo-gemini.svg"
+));
 const BOOKMARK_SVG: &[u8] =
     include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/bookmark.svg"));
 const SHARE_SVG: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/share.svg"));

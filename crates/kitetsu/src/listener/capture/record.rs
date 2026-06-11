@@ -1,11 +1,12 @@
 //! Blocking audio capture via libpulse-simple-binding and WAV serialisation.
 //!
-//! `capture_to_wav` opens one PulseAudio record stream, collects PCM for the
-//! requested duration, writes a 16-bit WAV file, and returns. Designed to run
-//! on a dedicated `std::thread` — never on the tokio runtime.
+//! Provides two capture entry points: `capture_to_wav` writes a file at 48 kHz
+//! for offline inspection; `capture_samples` returns 16 kHz mono f32 samples
+//! ready for STT inference. Both are designed to run on a dedicated
+//! `std::thread` — never on the tokio runtime.
 //!
 //! Does no device introspection; the caller supplies a resolved device name
-//! (see `listener::discover`).
+//! (see `listener::capture::discover`).
 
 use std::io::Write as _;
 use std::path::Path;
@@ -16,30 +17,22 @@ use libpulse_binding::stream::Direction;
 use libpulse_simple_binding::Simple;
 use tracing::info;
 
-// ── Error type ────────────────────────────────────────────────────────────────
+use crate::listener::ListenerError;
 
-#[derive(Debug, thiserror::Error)]
-pub enum ListenerError {
-    #[error("PulseAudio introspection failed: {0}")]
-    IntrospectionFailed(&'static str),
-
-    #[error("PulseAudio record stream could not be opened: {0}")]
-    ConnectFailed(&'static str),
-
-    #[error("PulseAudio read error: {0}")]
-    CaptureFailed(&'static str),
-
-    #[error("I/O error writing audio file: {0}")]
-    Io(#[from] std::io::Error),
-}
-
-// ── Capture configuration ─────────────────────────────────────────────────────
+// ── Constants ─────────────────────────────────────────────────────────────────
 
 const SAMPLE_RATE: u32 = 48_000;
 const BITS_PER_SAMPLE: u16 = 16;
 
-/// Parameters for one capture stream. Construct with `CaptureConfig::mic` or
-/// `CaptureConfig::system`; the channel count is baked in per stream type.
+/// Default one-shot capture window for STT inference.
+/// Rolling-window capture (live transcription) is a future iteration.
+pub const DEFAULT_CAPTURE_SECS: u64 = 5;
+
+// ── Capture configuration ─────────────────────────────────────────────────────
+
+/// Parameters for one 48 kHz file-dump capture stream. Construct with
+/// `CaptureConfig::mic` or `CaptureConfig::system`; the channel count is
+/// baked in per stream type.
 #[derive(Debug, Clone)]
 pub struct CaptureConfig {
     /// Resolved PulseAudio device name (from `discover_default_devices`).
@@ -70,7 +63,7 @@ impl CaptureConfig {
     }
 }
 
-// ── Public capture entry point ────────────────────────────────────────────────
+// ── 48 kHz file-dump capture ──────────────────────────────────────────────────
 
 /// Open a PulseAudio record stream on `cfg.device`, capture PCM for
 /// `duration`, write a 16-bit WAV to `out_path`, then return.
@@ -144,6 +137,81 @@ pub fn capture_to_wav(
     );
 
     Ok(())
+}
+
+// ── 16 kHz mono STT capture ───────────────────────────────────────────────────
+
+/// Open a PulseAudio record stream at 16 kHz mono on `device`, capture PCM
+/// for `duration`, and return the samples as normalised f32 (range −1.0..1.0).
+///
+/// PipeWire / PulseAudio resamples and downmixes from the hardware rate; no
+/// resampler dependency is needed. The resulting slice is ready to pass
+/// directly to a `SpeechModel::transcribe` implementation.
+/// Blocks the calling thread for `duration`.
+pub fn capture_samples(
+    device: &str,
+    label: &'static str,
+    duration: Duration,
+) -> Result<Vec<f32>, ListenerError> {
+    const RATE_16K: u32 = 16_000;
+
+    let spec = Spec {
+        format: Format::S16le,
+        rate: RATE_16K,
+        channels: 1,
+    };
+
+    info!(
+        label,
+        device,
+        rate = RATE_16K,
+        channels = 1,
+        "opening 16 kHz mono capture stream for transcription",
+    );
+
+    let simple = Simple::new(
+        None,
+        "kitetsu",
+        Direction::Record,
+        Some(device),
+        label,
+        &spec,
+        None,
+        None,
+    )
+    .map_err(|_| ListenerError::ConnectFailed("could not open 16 kHz PulseAudio record stream"))?;
+
+    info!(label, "stream open — capturing at 16 kHz mono");
+
+    // S16LE mono: 2 bytes per sample
+    let bytes_per_sample = 2_usize;
+    let chunk_samples = 4096_usize;
+    let chunk_bytes = chunk_samples * bytes_per_sample;
+    let total_samples = RATE_16K as usize * duration.as_secs() as usize;
+    let total_bytes = total_samples * bytes_per_sample;
+
+    let mut pcm_bytes: Vec<u8> = Vec::with_capacity(total_bytes);
+    let mut buf = vec![0u8; chunk_bytes];
+    let deadline = Instant::now() + duration;
+
+    while Instant::now() < deadline && pcm_bytes.len() < total_bytes {
+        simple
+            .read(&mut buf)
+            .map_err(|_| ListenerError::CaptureFailed("PulseAudio read returned an error"))?;
+        let remaining = total_bytes - pcm_bytes.len();
+        let to_copy = buf.len().min(remaining);
+        pcm_bytes.extend_from_slice(&buf[..to_copy]);
+    }
+
+    // Convert S16LE bytes to normalised f32; whisper expects −1.0..1.0.
+    let samples: Vec<f32> = pcm_bytes
+        .chunks_exact(2)
+        .map(|b| f32::from(i16::from_le_bytes([b[0], b[1]])) / 32_768.0)
+        .collect();
+
+    info!(label, sample_count = samples.len(), "STT capture complete");
+
+    Ok(samples)
 }
 
 // ── WAV writer ────────────────────────────────────────────────────────────────
