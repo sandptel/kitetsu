@@ -1,0 +1,12 @@
+[package]
+name = "kitetsu-primitives"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "kitetsu-primitives"
+path = "src/main.rs"
+
+[dependencies]
+iced = { version = "0.14", features = ["svg", "advanced"] }
+iced_layershell = "=0.18.1"
