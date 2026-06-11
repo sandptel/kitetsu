@@ -1,0 +1,27 @@
+[package]
+name    = "kitetsu"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "kitetsu"
+path = "src/lib.rs"
+
+[dependencies]
+# PulseAudio / PipeWire-pulse audio capture — §5.1 table.
+# libpulse-binding is the base crate that provides Sample::Spec, Direction,
+# Context, and the standard Mainloop needed for device introspection.
+# libpulse-simple-binding provides the high-level blocking record API.
+libpulse-binding        = "2"
+libpulse-simple-binding = "2"
+
+# Structured logging — §5.1 table.
+tracing = "0.1"
+
+# Library-level errors — §5.1 table / §5 code style.
+thiserror = "2"
+
+[dev-dependencies]
+# Used only by the capture_audio example (the binary edge where anyhow is allowed).
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow             = "1"
