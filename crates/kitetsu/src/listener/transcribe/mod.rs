@@ -1,32 +1,29 @@
 //! Speech-recognition sub-package: model loading and one-shot inference.
 //!
-//! `model` defines `AudioModel` (the public backend selector) and the internal
-//! `LoadedModel` handle. `engine` runs synchronous inference on f32 samples.
-//! `Transcriber` is defined here as the integration point: it loads a model
-//! once and reuses it across calls. Does no audio capture.
+//! `models/` defines `AudioModel` (the public backend selector), `MoonshineVariant`,
+//! and the internal `LoadedModel` handle — one file per backend, unified by enum
+//! dispatch. `Transcriber` is defined here as the load-once / reuse integration
+//! point. Does no audio capture.
 
-mod engine;
-pub(crate) mod model;
+mod models;
 
-pub(crate) use engine::transcribe_samples;
-pub use model::AudioModel;
+pub use models::{AudioModel, MoonshineVariant};
 
 use std::sync::mpsc::Sender;
 
 use crate::listener::ListenerError;
-use model::LoadedModel;
+use models::LoadedModel;
 
-// ── Transcriber ───────────────────────────────────────────────────────────────
+// ── Transcriber ────────────────────────────────────────────────────────────────
 
 /// A speech-recognition model loaded once and reused across transcription calls.
 ///
 /// Load at startup with [`Transcriber::load`]; then call [`Transcriber::transcribe`]
-/// as many times as needed without paying the model-load cost again. Each call
-/// only runs inference — the model stays in memory for the lifetime of the struct.
+/// as many times as needed without paying the model-load cost on each call.
 ///
-/// `Transcriber` is `Send`; wrap in `Arc<Mutex<Transcriber>>` to share across
-/// async tasks, or move into individual `tokio::task::spawn_blocking` closures
-/// when calls are sequential.
+/// `Transcriber` is `Send`; for true concurrent inference across two audio streams
+/// load two separate instances (one per stream) rather than sharing one behind a
+/// `Mutex` — the parallel gain is worth the extra memory for small models.
 pub struct Transcriber {
     model: LoadedModel,
 }
@@ -34,9 +31,9 @@ pub struct Transcriber {
 impl Transcriber {
     /// Load the model into memory.
     ///
-    /// This is the expensive startup step — model files are read from disk and
-    /// inference buffers are allocated. Call it once when the daemon starts and
-    /// hold on to the returned `Transcriber`.
+    /// This is the expensive startup step — ONNX sessions or GGML buffers are
+    /// allocated here. Call it once when the daemon starts and hold on to the
+    /// returned `Transcriber`.
     pub fn load(model: AudioModel) -> Result<Self, ListenerError> {
         let loaded = model.resolve().load()?;
         Ok(Self { model: loaded })
@@ -45,9 +42,9 @@ impl Transcriber {
     /// Run inference on `samples` (16 kHz mono f32) using the already-loaded model.
     ///
     /// `progress_tx`, when provided, receives progress values 0–100 during
-    /// inference. Read from a polling loop on another thread to drive a progress
-    /// display. The sender is dropped at the end of inference; `try_recv` will
-    /// drain and then return `Err(Disconnected)`, which is the completion signal.
+    /// inference. For Whisper this fires incrementally; for Moonshine a single
+    /// `100` is sent on completion. The sender is dropped at the end of inference;
+    /// `try_recv` returning `Err(Disconnected)` is the completion signal.
     ///
     /// Blocks the calling thread for the duration of inference. Run inside
     /// `tokio::task::spawn_blocking` when called from async code.
@@ -56,6 +53,6 @@ impl Transcriber {
         samples: &[f32],
         progress_tx: Option<Sender<u8>>,
     ) -> Result<String, ListenerError> {
-        engine::transcribe_samples(&mut self.model, samples, progress_tx)
+        self.model.transcribe(samples, progress_tx)
     }
 }

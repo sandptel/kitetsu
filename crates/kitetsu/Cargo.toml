@@ -8,11 +8,15 @@ name = "kitetsu"
 path = "src/lib.rs"
 
 [features]
-# Only whisper is wired now; whisperfile/onnx compile but return BackendNotCompiled.
-default = ["whisper"]
+# Moonshine via transcribe-rs/onnx is the default STT backend (Decision #21/#22).
+# Enable --features whisper to keep the Whisper GGML path for comparison.
+default = ["onnx"]
+onnx = ["dep:transcribe-rs", "transcribe-rs/onnx"]
+# Pass-through for AMD ROCm inference via ort — wired but unused until gfx1150
+# iGPU support is production-ready on Linux (see Decision #21 in KITETSU_PLAN.md).
+ort-rocm = ["onnx", "transcribe-rs/ort-rocm"]
 whisper = ["dep:whisper-rs"]
 whisperfile = ["dep:transcribe-rs", "transcribe-rs/whisperfile"]
-onnx = ["dep:transcribe-rs", "transcribe-rs/onnx"]
 
 [dependencies]
 # PulseAudio / PipeWire-pulse audio capture — §5.1 table.
@@ -33,6 +37,14 @@ tracing = "0.1"
 
 # Library-level errors — §5.1 table / §5 code style.
 thiserror = "2"
+
+[[example]]
+name = "live_transcribe"
+required-features = ["onnx"]
+
+[[example]]
+name = "transcribe_audio"
+required-features = ["whisper"]
 
 [dev-dependencies]
 # Used only at binary edges (examples) where anyhow is allowed.

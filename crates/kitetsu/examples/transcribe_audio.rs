@@ -1,9 +1,12 @@
-//! Demonstrates the full capture → transcription pipeline with a persistent
-//! [`Transcriber`]: models are loaded once before recording starts, so inference
-//! begins immediately when recording stops with no model-load latency in the
-//! hot path. Both mic and system audio are captured and processed concurrently.
+//! Demonstrates the full capture → transcription pipeline using the Whisper GGML
+//! backend: models are loaded once before recording starts, so inference begins
+//! immediately when recording stops with no model-load latency in the hot path.
+//! Both mic and system audio are captured and processed concurrently with
+//! incremental progress bars driven by the whisper decode-step callback.
 //!
-//! Usage: `cargo run -p kitetsu --example transcribe_audio`
+//! Usage: `cargo run -p kitetsu --features whisper --example transcribe_audio`
+//!
+//! For the faster Moonshine default, use `live_transcribe` instead.
 //!
 //! Prerequisites:
 //!   - A GGML Whisper model at `$KITETSU_WHISPER_MODEL` or
@@ -15,6 +18,8 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
+
+use std::path::PathBuf;
 
 use kitetsu::listener::{AudioModel, Devices, Recorder, Transcriber, discover_default_devices};
 
@@ -37,13 +42,34 @@ async fn main() -> anyhow::Result<()> {
     println!("  system: {system_monitor}");
     println!();
 
-    // ── Load models upfront (once at startup; held alive for reuse) ───────────
+    // ── Load Whisper models upfront (once at startup; held alive for reuse) ────
+    //
+    // Resolve the model path from the environment variable or the default XDG
+    // location. Pass --features whisper to enable this example.
+    let model_path = std::env::var("KITETSU_WHISPER_MODEL")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            let base = std::env::var("XDG_DATA_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| {
+                    std::env::var("HOME")
+                        .map(|h| PathBuf::from(h).join(".local/share"))
+                        .unwrap_or_else(|_| PathBuf::from("/tmp"))
+                });
+            base.join("kitetsu/models/ggml-base.en.bin")
+        });
+
     println!("Loading speech models...");
+    println!("  whisper: {}", model_path.display());
     let load_start = Instant::now();
-    let mut mic_t =
-        Transcriber::load(AudioModel::Default).context("failed to load whisper model (mic)")?;
-    let mut sys_t =
-        Transcriber::load(AudioModel::Default).context("failed to load whisper model (system)")?;
+    let mut mic_t = Transcriber::load(AudioModel::Whisper {
+        model_path: model_path.clone(),
+    })
+    .context("failed to load whisper model (mic)")?;
+    let mut sys_t = Transcriber::load(AudioModel::Whisper {
+        model_path: model_path.clone(),
+    })
+    .context("failed to load whisper model (system)")?;
     println!(
         "Models ready in {:.1}s.\n",
         load_start.elapsed().as_secs_f32()
