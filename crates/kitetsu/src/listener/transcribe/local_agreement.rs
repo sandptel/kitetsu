@@ -14,17 +14,17 @@ use super::vad::{SILENCE_RMS, rms};
 
 // ── Constants (all in samples at 16 kHz) ─────────────────────────────────────
 
-/// New samples between consecutive passes (~1 s step). Lower = lower latency,
+/// New samples between consecutive passes (~3 s step). Lower = lower latency,
 /// higher CPU. VAD gate means this only runs during speech.
 pub(crate) const STEP_SAMPLES: usize = 48_000;
 
-/// Minimum window size before a pass is worthwhile (~1 s). Guards against
+/// Minimum window size before a pass is worthwhile (~3 s). Guards against
 /// running inference on tiny slivers at the start of an utterance.
-pub(crate) const MIN_INFERENCE_SAMPLES: usize = 16_000;
+pub(crate) const MIN_INFERENCE_SAMPLES: usize = 32_000;
 
 /// Trailing silence before forcing a final commit (~0.5 s). Closes the
 /// utterance promptly rather than waiting for the next step or the 15 s cap.
-pub(crate) const TRAILING_SILENCE_SAMPLES: usize = 8_000;
+pub(crate) const TRAILING_SILENCE_SAMPLES: usize = 16_000;
 
 /// Hard cap on the rolling window (15 s). Forces a final commit for
 /// non-stop speech, same guard as `VadGated`.
