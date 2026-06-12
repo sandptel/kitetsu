@@ -30,10 +30,6 @@ pub enum ListenerError {
 
     #[error("blocking task panicked")]
     JoinError,
-
-    // reserved: see PLAN Decision #21
-    #[error("not yet implemented: {0}")]
-    NotImplemented(&'static str),
 }
 
 impl ListenerError {

@@ -6,10 +6,8 @@
 
 mod discover;
 mod record;
-mod stream;
 
 pub use discover::{Devices, discover_default_devices};
 pub use record::{
     CaptureConfig, DEFAULT_CAPTURE_SECS, Recorder, RecordingHandle, capture_samples, capture_to_wav,
 };
-pub(crate) use stream::capture_stream;

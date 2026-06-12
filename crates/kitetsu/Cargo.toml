@@ -13,7 +13,6 @@ default = ["whisper"]
 whisper = ["dep:whisper-rs"]
 whisperfile = ["dep:transcribe-rs", "transcribe-rs/whisperfile"]
 onnx = ["dep:transcribe-rs", "transcribe-rs/onnx"]
-sherpa = ["dep:sherpa-onnx"]
 
 [dependencies]
 # PulseAudio / PipeWire-pulse audio capture — §5.1 table.
@@ -24,10 +23,6 @@ libpulse-simple-binding = "2"
 # transcribe-rs is kept only for future whisperfile/onnx backends (Decision #19).
 whisper-rs = { version = "0.16", default-features = false, optional = true }
 transcribe-rs = { version = "0.3", default-features = false, optional = true }
-# Sherpa-ONNX streaming ASR — natively streaming, transducer/CTC models.
-# Build with SHERPA_ONNX_LIB_DIR pointing to the installed lib directory
-# (NixOS: point to the sherpa-onnx Nix store derivation's lib/).
-sherpa-onnx = { version = "1.13", default-features = false, optional = true }
 
 # Async runtime for spawn_blocking (capture + inference stay on blocking threads).
 # `time` is needed for the progress-polling sleep in the example and future UI pipe.
