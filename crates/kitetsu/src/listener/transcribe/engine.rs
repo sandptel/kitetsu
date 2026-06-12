@@ -104,6 +104,10 @@ fn do_transcribe(
 
             Ok(parts.join(" "))
         }
+        #[cfg(feature = "sherpa")]
+        LoadedModel::SherpaOnnx(_) => Err(ListenerError::Transcription(
+            "SherpaOnnx is a streaming backend — use StreamMode::SherpaStreaming".into(),
+        )),
     }
 }
 
@@ -204,6 +208,10 @@ fn do_transcribe_words(
 
             Ok(words)
         }
+        #[cfg(feature = "sherpa")]
+        LoadedModel::SherpaOnnx(_) => Err(ListenerError::Transcription(
+            "SherpaOnnx is a streaming backend — use StreamMode::SherpaStreaming".into(),
+        )),
     }
 }
 
@@ -215,5 +223,78 @@ fn do_transcribe_words(
 ) -> Result<Vec<TimedWord>, ListenerError> {
     Err(ListenerError::BackendNotCompiled(
         "whisper — enable the 'whisper' feature",
+    ))
+}
+
+// ── Sherpa-ONNX streaming inference ──────────────────────────────────────────
+
+/// Feed one audio block to the sherpa-onnx streaming recognizer.
+///
+/// Returns `(current_text, is_endpoint)`. `current_text` is the full hypothesis
+/// for the current utterance so far; `is_endpoint` is `true` when sherpa's
+/// built-in endpoint rules say the utterance has ended. The caller should commit
+/// `current_text` and call [`sherpa_reset`] when `is_endpoint` is `true`.
+///
+/// Takes `&LoadedModel` (not `&mut`) because all sherpa API methods are `&self`.
+pub(crate) fn sherpa_feed_block(
+    model: &LoadedModel,
+    block: &[f32],
+) -> Result<(String, bool), ListenerError> {
+    do_sherpa_feed(model, block)
+}
+
+/// Reset the sherpa-onnx stream after an endpoint so the next utterance starts clean.
+pub(crate) fn sherpa_reset(model: &LoadedModel) -> Result<(), ListenerError> {
+    do_sherpa_reset(model)
+}
+
+#[cfg(feature = "sherpa")]
+fn do_sherpa_feed(model: &LoadedModel, block: &[f32]) -> Result<(String, bool), ListenerError> {
+    match model {
+        LoadedModel::SherpaOnnx(m) => {
+            m.stream.accept_waveform(16000, block);
+            while m.recognizer.is_ready(&m.stream) {
+                m.recognizer.decode(&m.stream);
+            }
+            let is_endpoint = m.recognizer.is_endpoint(&m.stream);
+            let text = m
+                .recognizer
+                .get_result(&m.stream)
+                .map(|r| r.text.trim().to_owned())
+                .unwrap_or_default();
+            Ok((text, is_endpoint))
+        }
+        #[cfg(feature = "whisper")]
+        LoadedModel::Whisper(_) => Err(ListenerError::Transcription(
+            "Whisper is a batch backend — use StreamMode::VadGated or LocalAgreement".into(),
+        )),
+    }
+}
+
+#[cfg(not(feature = "sherpa"))]
+fn do_sherpa_feed(_model: &LoadedModel, _block: &[f32]) -> Result<(String, bool), ListenerError> {
+    Err(ListenerError::BackendNotCompiled(
+        "sherpa — enable the 'sherpa' feature",
+    ))
+}
+
+#[cfg(feature = "sherpa")]
+fn do_sherpa_reset(model: &LoadedModel) -> Result<(), ListenerError> {
+    match model {
+        LoadedModel::SherpaOnnx(m) => {
+            m.recognizer.reset(&m.stream);
+            Ok(())
+        }
+        #[cfg(feature = "whisper")]
+        LoadedModel::Whisper(_) => Err(ListenerError::Transcription(
+            "Whisper is a batch backend — use StreamMode::VadGated or LocalAgreement".into(),
+        )),
+    }
+}
+
+#[cfg(not(feature = "sherpa"))]
+fn do_sherpa_reset(_model: &LoadedModel) -> Result<(), ListenerError> {
+    Err(ListenerError::BackendNotCompiled(
+        "sherpa — enable the 'sherpa' feature",
     ))
 }

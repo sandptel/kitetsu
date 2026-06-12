@@ -102,4 +102,21 @@ impl Transcriber {
     ) -> Result<Vec<TimedWord>, ListenerError> {
         engine::transcribe_words(&mut self.model, samples, initial_prompt)
     }
+
+    /// Feed one audio block to the sherpa-onnx streaming recognizer.
+    ///
+    /// Returns `(current_text, is_endpoint)`. Takes `&self` because sherpa's C
+    /// API operates via immutable handles. Only valid when the model was loaded
+    /// via [`AudioModel::SherpaOnnx`]; returns `BackendNotCompiled` otherwise.
+    pub(crate) fn sherpa_feed(&self, block: &[f32]) -> Result<(String, bool), ListenerError> {
+        engine::sherpa_feed_block(&self.model, block)
+    }
+
+    /// Reset the sherpa-onnx stream after an endpoint.
+    ///
+    /// Must be called after `sherpa_feed` returns `is_endpoint = true` so the
+    /// next utterance starts from a clean state.
+    pub(crate) fn sherpa_reset(&self) -> Result<(), ListenerError> {
+        engine::sherpa_reset(&self.model)
+    }
 }

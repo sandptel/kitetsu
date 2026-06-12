@@ -29,6 +29,17 @@ pub enum AudioModel {
     Whisperfile { model_path: PathBuf },
     /// SenseVoice ONNX model directory (reserved — see PLAN §6.6; requires the `onnx` feature).
     Onnx { model_dir: PathBuf },
+    /// Sherpa-ONNX streaming model directory (requires the `sherpa` feature).
+    ///
+    /// Supports Zipformer transducer models. `model_dir` must contain:
+    /// - one `.onnx` file whose name starts with `encoder`
+    /// - one `.onnx` file whose name starts with `decoder`
+    /// - one `.onnx` file whose name starts with `joiner`
+    /// - `tokens.txt`
+    ///
+    /// Use `$KITETSU_SHERPA_MODEL` env var or the default XDG path:
+    /// `$XDG_DATA_HOME/kitetsu/models/sherpa-onnx-streaming-en`
+    SherpaOnnx { model_dir: PathBuf },
 }
 
 impl AudioModel {
@@ -43,7 +54,26 @@ impl AudioModel {
                 cfg!(feature = "whisperfile") && model_path.exists()
             }
             AudioModel::Onnx { model_dir } => cfg!(feature = "onnx") && model_dir.is_dir(),
+            AudioModel::SherpaOnnx { model_dir } => cfg!(feature = "sherpa") && model_dir.is_dir(),
         }
+    }
+
+    /// Returns the default sherpa-onnx model directory path.
+    ///
+    /// Reads `$KITETSU_SHERPA_MODEL` first; falls back to
+    /// `$XDG_DATA_HOME/kitetsu/models/sherpa-onnx-streaming-en`.
+    pub fn default_sherpa_model_dir() -> PathBuf {
+        if let Ok(p) = std::env::var("KITETSU_SHERPA_MODEL") {
+            return PathBuf::from(p);
+        }
+        let base = std::env::var("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                std::env::var("HOME")
+                    .map(|h| PathBuf::from(h).join(".local/share"))
+                    .unwrap_or_else(|_| PathBuf::from("/tmp"))
+            });
+        base.join("kitetsu/models/sherpa-onnx-streaming-en")
     }
 
     /// If this model is unavailable, falls back to `AudioModel::Default` and
@@ -92,6 +122,7 @@ impl AudioModel {
             AudioModel::Onnx { .. } => Err(ListenerError::BackendNotCompiled(
                 "onnx — enable the 'onnx' feature",
             )),
+            AudioModel::SherpaOnnx { model_dir } => load_sherpa(model_dir, n_threads_override),
         }
     }
 
@@ -118,6 +149,8 @@ impl AudioModel {
 pub(crate) enum LoadedModel {
     #[cfg(feature = "whisper")]
     Whisper(WhisperModel),
+    #[cfg(feature = "sherpa")]
+    SherpaOnnx(SherpaOnnxModel),
 }
 
 /// Owns a whisper.cpp inference state. `WhisperState` holds an `Arc` to the
@@ -127,6 +160,18 @@ pub(crate) enum LoadedModel {
 pub(crate) struct WhisperModel {
     pub(crate) state: whisper_rs::WhisperState,
     pub(crate) n_threads: i32,
+}
+
+/// Owns a sherpa-onnx streaming recognizer and its associated audio stream.
+///
+/// `recognizer` is the loaded model; `stream` is the per-utterance inference
+/// context. Both are `Send + Sync` (sherpa-onnx C library is thread-safe for
+/// single-object usage). The stream is reset between utterances via
+/// `engine::sherpa_reset`; the recognizer stays loaded for the process lifetime.
+#[cfg(feature = "sherpa")]
+pub(crate) struct SherpaOnnxModel {
+    pub(crate) recognizer: sherpa_onnx::OnlineRecognizer,
+    pub(crate) stream: sherpa_onnx::OnlineStream,
 }
 
 // ── Backend constructors (cfg-gated pairs) ────────────────────────────────────
@@ -174,5 +219,103 @@ fn load_whisper(
     let _ = path;
     Err(ListenerError::BackendNotCompiled(
         "whisper — enable the 'whisper' feature",
+    ))
+}
+
+// ── Sherpa-ONNX backend ───────────────────────────────────────────────────────
+
+#[cfg(feature = "sherpa")]
+fn load_sherpa(
+    model_dir: PathBuf,
+    n_threads_override: Option<i32>,
+) -> Result<LoadedModel, ListenerError> {
+    use sherpa_onnx::{OnlineRecognizer, OnlineRecognizerConfig};
+
+    let n_threads = n_threads_override.unwrap_or(2).clamp(1, 4) as i32;
+
+    tracing::info!(dir = %model_dir.display(), n_threads, "loading sherpa-onnx model");
+
+    let encoder = find_onnx_file(&model_dir, "encoder")?;
+    let decoder = find_onnx_file(&model_dir, "decoder")?;
+    let joiner = find_onnx_file(&model_dir, "joiner")?;
+    let tokens = model_dir.join("tokens.txt");
+
+    if !tokens.exists() {
+        return Err(ListenerError::ModelUnavailable(format!(
+            "tokens.txt not found in {}",
+            model_dir.display()
+        )));
+    }
+
+    let mut config = OnlineRecognizerConfig::default();
+    config.model_config.transducer.encoder = Some(encoder.to_string_lossy().into_owned());
+    config.model_config.transducer.decoder = Some(decoder.to_string_lossy().into_owned());
+    config.model_config.transducer.joiner = Some(joiner.to_string_lossy().into_owned());
+    config.model_config.tokens = Some(tokens.to_string_lossy().into_owned());
+    config.model_config.num_threads = n_threads;
+    // Built-in endpoint detection: commit after ~2.4 s of trailing silence or
+    // ~1.2 s with enough words. Rule 3 covers long non-stop utterances (20 s).
+    config.enable_endpoint = true;
+    config.rule1_min_trailing_silence = 2.4;
+    config.rule2_min_trailing_silence = 1.2;
+    config.rule3_min_utterance_length = 20.0;
+    config.decoding_method = Some("greedy_search".into());
+
+    let recognizer = OnlineRecognizer::create(&config).ok_or_else(|| {
+        ListenerError::ModelUnavailable(format!(
+            "sherpa-onnx: failed to create recognizer from {}",
+            model_dir.display()
+        ))
+    })?;
+    let stream = recognizer.create_stream();
+
+    tracing::info!(dir = %model_dir.display(), "sherpa-onnx model ready");
+
+    Ok(LoadedModel::SherpaOnnx(SherpaOnnxModel {
+        recognizer,
+        stream,
+    }))
+}
+
+/// Find the first `.onnx` file in `dir` whose stem starts with `prefix`.
+/// Prefers int8-quantized variants (file stem contains "int8") when both exist.
+#[cfg(feature = "sherpa")]
+fn find_onnx_file(dir: &PathBuf, prefix: &str) -> Result<PathBuf, ListenerError> {
+    let mut candidates: Vec<PathBuf> = std::fs::read_dir(dir)?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.extension().map_or(false, |ext| ext == "onnx")
+                && p.file_stem()
+                    .and_then(|s| s.to_str())
+                    .map_or(false, |s| s.starts_with(prefix))
+        })
+        .collect();
+
+    if candidates.is_empty() {
+        return Err(ListenerError::ModelUnavailable(format!(
+            "no .onnx file with prefix '{prefix}' found in {}",
+            dir.display()
+        )));
+    }
+
+    // Prefer int8 (faster inference) when available.
+    candidates.sort_by_key(|p| {
+        let is_int8 = p
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map_or(false, |s| s.contains("int8"));
+        !is_int8 // false (int8) sorts before true (non-int8)
+    });
+
+    Ok(candidates.remove(0))
+}
+
+#[cfg(not(feature = "sherpa"))]
+fn load_sherpa(
+    _model_dir: PathBuf,
+    _n_threads_override: Option<i32>,
+) -> Result<LoadedModel, ListenerError> {
+    Err(ListenerError::BackendNotCompiled(
+        "sherpa — enable the 'sherpa' feature",
     ))
 }

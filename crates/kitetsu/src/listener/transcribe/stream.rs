@@ -29,7 +29,17 @@ pub enum StreamMode {
     /// Two-pass LocalAgreement-2 sliding window (`local_agreement` module).
     /// Words are confirmed once two consecutive inference passes agree on them;
     /// the unconfirmed tail is exposed as `FeedResult::tentative`.
+    ///
+    /// Secondary mode — requires the `whisper` feature. For most use cases
+    /// `SherpaStreaming` offers lower latency with simpler setup.
     LocalAgreement,
+    /// Natively-streaming sherpa-onnx recognizer (requires the `sherpa` feature).
+    ///
+    /// Audio is fed block-by-block directly to an online ONNX recognizer;
+    /// partial text is emitted as `FeedResult::tentative` as you speak, then
+    /// committed when sherpa's built-in endpoint detection fires.
+    /// Significantly lower CPU latency than `VadGated` or `LocalAgreement`.
+    SherpaStreaming,
 }
 
 /// Result of feeding one block to a [`StreamingTranscriber`].
@@ -48,6 +58,12 @@ pub struct FeedResult {
 enum ModeState {
     Vad(VadSegmenter),
     LocalAgreement(LocalAgreementSegmenter),
+    /// Sherpa mode carries no extra segmenter state — the model handles all
+    /// internal buffering. `last_text` deduplicates consecutive identical
+    /// tentative updates so the worker thread isn't flooded with no-ops.
+    Sherpa {
+        last_text: String,
+    },
 }
 
 // ── StreamingTranscriber ──────────────────────────────────────────────────────
@@ -70,6 +86,9 @@ impl StreamingTranscriber {
         let state = match mode {
             StreamMode::VadGated => ModeState::Vad(VadSegmenter::new()),
             StreamMode::LocalAgreement => ModeState::LocalAgreement(LocalAgreementSegmenter::new()),
+            StreamMode::SherpaStreaming => ModeState::Sherpa {
+                last_text: String::new(),
+            },
         };
         Self {
             transcriber,
@@ -86,6 +105,7 @@ impl StreamingTranscriber {
         match &mut self.state {
             ModeState::Vad(_) => self.feed_vad(block),
             ModeState::LocalAgreement(_) => self.feed_la(block),
+            ModeState::Sherpa { .. } => self.feed_sherpa(block),
         }
     }
 
@@ -183,6 +203,60 @@ impl StreamingTranscriber {
                 })
             }
         }
+    }
+
+    // ── Sherpa path ───────────────────────────────────────────────────────────
+
+    fn feed_sherpa(&mut self, block: &[f32]) -> Result<FeedResult, ListenerError> {
+        // Feed block + decode; sherpa_feed takes &self (sherpa API is &self).
+        let (text, is_endpoint) = self.transcriber.sherpa_feed(block)?;
+
+        if is_endpoint {
+            // Always reset the stream on endpoint, even with empty text.
+            {
+                let ModeState::Sherpa { ref mut last_text } = self.state else {
+                    unreachable!()
+                };
+                *last_text = String::new();
+            }
+            self.transcriber.sherpa_reset()?;
+
+            if !text.is_empty() {
+                debug!(
+                    chars = text.len(),
+                    committed = text.as_str(),
+                    "sherpa: endpoint, committing"
+                );
+                self.push_committed(&text);
+                return Ok(FeedResult {
+                    committed: Some(text),
+                    tentative: String::new(),
+                });
+            }
+            return Ok(FeedResult {
+                committed: None,
+                tentative: String::new(),
+            });
+        }
+
+        // No endpoint: emit a tentative update only when the text changed.
+        let ModeState::Sherpa { ref mut last_text } = self.state else {
+            unreachable!()
+        };
+
+        if text == *last_text || text.is_empty() {
+            return Ok(FeedResult {
+                committed: None,
+                tentative: String::new(),
+            });
+        }
+
+        debug!(chars = text.len(), "sherpa: tentative update");
+        *last_text = text.clone();
+        Ok(FeedResult {
+            committed: None,
+            tentative: text,
+        })
     }
 
     // ── Shared helpers ────────────────────────────────────────────────────────
