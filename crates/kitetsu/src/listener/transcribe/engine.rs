@@ -1,8 +1,7 @@
 //! Pure synchronous inference: loaded engine + f32 samples → transcript text.
 //!
 //! Deliberately contains no capture logic and no async code. Progress updates
-//! are emitted via an optional `Sender<u8>` (values 0–100). The rolling-window
-//! / live-transcription path will extend this module in a future iteration.
+//! are emitted via an optional `Sender<u8>` (values 0–100).
 
 use std::sync::mpsc::Sender;
 
@@ -12,21 +11,25 @@ use super::model::LoadedModel;
 
 /// Run inference on `samples` (16 kHz mono f32) using the pre-loaded `model`.
 ///
+/// `initial_prompt` seeds the decoder with prior context (last ~200 chars of
+/// committed text) to improve cross-utterance continuity. Pass `""` to disable.
 /// `progress_tx` receives values 0–100 as the decoder advances. The call blocks
 /// for the duration of inference; wrap it in `tokio::task::spawn_blocking` at
 /// the call site.
 pub(crate) fn transcribe_samples(
     model: &mut LoadedModel,
     samples: &[f32],
+    initial_prompt: &str,
     progress_tx: Option<Sender<u8>>,
 ) -> Result<String, ListenerError> {
-    do_transcribe(model, samples, progress_tx)
+    do_transcribe(model, samples, initial_prompt, progress_tx)
 }
 
 #[cfg(feature = "whisper")]
 fn do_transcribe(
     model: &mut LoadedModel,
     samples: &[f32],
+    initial_prompt: &str,
     progress_tx: Option<Sender<u8>>,
 ) -> Result<String, ListenerError> {
     use whisper_rs::{FullParams, SamplingStrategy};
@@ -43,6 +46,10 @@ fn do_transcribe(
             params.set_print_timestamps(false);
             params.set_suppress_blank(true);
             params.set_suppress_nst(true);
+
+            if !initial_prompt.is_empty() {
+                params.set_initial_prompt(initial_prompt);
+            }
 
             if let Some(tx) = progress_tx {
                 params.set_progress_callback_safe(move |p: i32| {
@@ -76,6 +83,7 @@ fn do_transcribe(
 fn do_transcribe(
     _model: &mut LoadedModel,
     _samples: &[f32],
+    _initial_prompt: &str,
     _progress_tx: Option<Sender<u8>>,
 ) -> Result<String, ListenerError> {
     Err(ListenerError::BackendNotCompiled(

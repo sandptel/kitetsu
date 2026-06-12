@@ -2,6 +2,7 @@
 //!
 //! `capture` sub-package handles device discovery and blocking PCM recording.
 //! `transcribe` sub-package handles model loading and one-shot STT inference.
+//! `stream` provides live VAD-gated streaming (`StreamSession`, `StreamMode`).
 //! This module owns the async pipe that composes both, and defines the public
 //! sink-selection types (`AudioSink`, `InputSink`, `OutputSink`).
 //!
@@ -11,6 +12,7 @@
 
 mod capture;
 mod error;
+mod stream;
 // The physical directory is `transcribe/` but we name the module `transcriber`
 // to avoid a conflict with the public `fn transcribe` below.
 #[path = "transcribe/mod.rs"]
@@ -22,6 +24,7 @@ pub use capture::{
     CaptureConfig, Devices, Recorder, RecordingHandle, capture_to_wav, discover_default_devices,
 };
 pub use error::ListenerError;
+pub use stream::{StreamMode, StreamSession, StreamSource, TranscriptUpdate};
 pub use transcriber::{AudioModel, Transcriber};
 
 // ── Sink selection types ──────────────────────────────────────────────────────
@@ -70,7 +73,7 @@ pub async fn transcribe(sink: AudioSink, model: AudioModel) -> Result<String, Li
             Duration::from_secs(capture::DEFAULT_CAPTURE_SECS),
         )?;
         let mut loaded = model.load()?;
-        transcriber::transcribe_samples(&mut loaded, &samples, None)
+        transcriber::transcribe_samples(&mut loaded, &samples, "", None)
     })
     .await
     .map_err(ListenerError::join)?

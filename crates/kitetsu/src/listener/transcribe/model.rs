@@ -19,7 +19,7 @@ use crate::listener::ListenerError;
 /// `$KITETSU_WHISPER_MODEL` or `$XDG_DATA_HOME/kitetsu/models/ggml-base.en.bin`.
 /// `Whisperfile` and `Onnx` variants are compiled but not yet wired;
 /// calling `load()` on them returns [`ListenerError::BackendNotCompiled`].
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum AudioModel {
     /// Local Whisper model at the default XDG path or `$KITETSU_WHISPER_MODEL`.
     Default,
@@ -70,9 +70,21 @@ impl AudioModel {
     /// Call `resolve()` first if you want automatic fallback-to-Default
     /// behaviour when the selected backend is unavailable.
     pub(crate) fn load(self) -> Result<LoadedModel, ListenerError> {
+        self.load_inner(None)
+    }
+
+    /// Like [`load`] but caps the inference thread count.
+    ///
+    /// Use when running multiple streams concurrently to avoid over-subscribing
+    /// the CPU — typically `min(cores/2, 4)` when two sources are active.
+    pub(crate) fn load_with_threads(self, n_threads: i32) -> Result<LoadedModel, ListenerError> {
+        self.load_inner(Some(n_threads))
+    }
+
+    fn load_inner(self, n_threads_override: Option<i32>) -> Result<LoadedModel, ListenerError> {
         match self {
-            AudioModel::Default => load_whisper(Self::default_model_path()),
-            AudioModel::Whisper { model_path } => load_whisper(model_path),
+            AudioModel::Default => load_whisper(Self::default_model_path(), n_threads_override),
+            AudioModel::Whisper { model_path } => load_whisper(model_path, n_threads_override),
             // reserved: see PLAN §6.6 — wired in a future iteration
             AudioModel::Whisperfile { .. } => Err(ListenerError::BackendNotCompiled(
                 "whisperfile — enable the 'whisperfile' feature",
@@ -120,7 +132,10 @@ pub(crate) struct WhisperModel {
 // ── Backend constructors (cfg-gated pairs) ────────────────────────────────────
 
 #[cfg(feature = "whisper")]
-fn load_whisper(path: PathBuf) -> Result<LoadedModel, ListenerError> {
+fn load_whisper(
+    path: PathBuf,
+    n_threads_override: Option<i32>,
+) -> Result<LoadedModel, ListenerError> {
     use whisper_rs::{WhisperContext, WhisperContextParameters};
 
     // Route all C-level whisper.cpp / GGML logs through the Rust `log` crate.
@@ -129,10 +144,12 @@ fn load_whisper(path: PathBuf) -> Result<LoadedModel, ListenerError> {
     // `install_logging_hooks` is idempotent; no Once guard needed.
     whisper_rs::install_logging_hooks();
 
-    let n_threads = std::thread::available_parallelism()
-        .map(|n| n.get() as i32)
-        .unwrap_or(4)
-        .min(8);
+    let n_threads = n_threads_override.unwrap_or_else(|| {
+        std::thread::available_parallelism()
+            .map(|n| n.get() as i32)
+            .unwrap_or(4)
+            .min(8)
+    });
 
     tracing::info!(path = %path.display(), n_threads, "loading whisper model");
 
@@ -150,7 +167,10 @@ fn load_whisper(path: PathBuf) -> Result<LoadedModel, ListenerError> {
 }
 
 #[cfg(not(feature = "whisper"))]
-fn load_whisper(path: PathBuf) -> Result<LoadedModel, ListenerError> {
+fn load_whisper(
+    path: PathBuf,
+    _n_threads_override: Option<i32>,
+) -> Result<LoadedModel, ListenerError> {
     let _ = path;
     Err(ListenerError::BackendNotCompiled(
         "whisper — enable the 'whisper' feature",
