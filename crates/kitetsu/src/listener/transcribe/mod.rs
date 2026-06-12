@@ -3,13 +3,16 @@
 //! `model` defines `AudioModel` (the public backend selector) and the internal
 //! `LoadedModel` handle. `engine` runs synchronous inference on f32 samples.
 //! `Transcriber` is the integration point: loads a model once, reuses across calls.
-//! `stream` adds the live VAD-gated path on top. Does no audio capture.
+//! `stream` adds the live VAD-gated and LocalAgreement paths on top.
+//! Does no audio capture.
 
 mod engine;
+pub(crate) mod local_agreement;
 pub(crate) mod model;
 pub(crate) mod stream;
+pub(crate) mod vad;
 
-pub(crate) use engine::transcribe_samples;
+pub(crate) use engine::{TimedWord, transcribe_samples};
 pub use model::AudioModel;
 
 use std::sync::mpsc::Sender;
@@ -84,5 +87,19 @@ impl Transcriber {
         progress_tx: Option<Sender<u8>>,
     ) -> Result<String, ListenerError> {
         engine::transcribe_samples(&mut self.model, samples, initial_prompt, progress_tx)
+    }
+
+    /// Run inference on `samples`, returning one [`TimedWord`] per word with
+    /// its end timestamp in centiseconds.
+    ///
+    /// Used by `LocalAgreement` mode for word-level agreement and precise audio
+    /// buffer trimming. `initial_prompt` has the same semantics as
+    /// [`transcribe_with_context`]. Blocks for the duration of inference.
+    pub(crate) fn transcribe_words(
+        &mut self,
+        samples: &[f32],
+        initial_prompt: &str,
+    ) -> Result<Vec<TimedWord>, ListenerError> {
+        engine::transcribe_words(&mut self.model, samples, initial_prompt)
     }
 }

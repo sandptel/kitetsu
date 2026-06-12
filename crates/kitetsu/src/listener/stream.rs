@@ -34,10 +34,12 @@ pub enum StreamSource {
 pub struct TranscriptUpdate {
     /// Which source produced this update.
     pub source: StreamSource,
-    /// Newly committed utterance text. Never empty when `committed` is present.
+    /// Newly committed text for this update. May be empty for `LocalAgreement`
+    /// tentative-only updates (where `tentative` is non-empty but no new words
+    /// have been confirmed yet). Always non-empty for `VadGated`.
     pub committed: String,
-    /// In-progress tentative tail. Always `""` for `VadGated`; populated once
-    /// `LocalAgreement` is implemented (see PLAN Decision #21).
+    /// In-progress tentative tail. Always `""` for `VadGated`; populated by
+    /// `LocalAgreement` as words stream in before being confirmed.
     pub tentative: String,
 }
 
@@ -57,19 +59,14 @@ impl StreamSession {
     /// caps threads at `min(cores/2, 4)` to avoid CPU over-subscription, and
     /// returns a `Receiver` that fans all `TranscriptUpdate`s together.
     ///
-    /// `LocalAgreement` mode returns `Err(ListenerError::NotImplemented)` until
-    /// it is wired in a future iteration (reserved: see PLAN Decision #21).
+    /// Both `VadGated` and `LocalAgreement` modes are fully supported.
+    /// `LocalAgreement` additionally emits tentative-only `TranscriptUpdate`s
+    /// (with `committed = ""`) as words stream in before being confirmed.
     pub fn start(
         sources: &[StreamSource],
         model: AudioModel,
         mode: StreamMode,
     ) -> Result<(StreamSession, Receiver<TranscriptUpdate>), ListenerError> {
-        if matches!(mode, StreamMode::LocalAgreement) {
-            return Err(ListenerError::NotImplemented(
-                "LocalAgreement — reserved: see PLAN Decision #21",
-            ));
-        }
-
         // Cap threads so two concurrent whisper instances don't over-subscribe.
         let total_cores = std::thread::available_parallelism()
             .map(|n| n.get() as i32)
@@ -128,16 +125,21 @@ impl StreamSession {
                     for block in &block_rx {
                         match streaming.feed(&block) {
                             Ok(FeedResult {
-                                committed: Some(text),
+                                committed,
                                 tentative,
                             }) => {
-                                let _ = update_tx.send(TranscriptUpdate {
-                                    source,
-                                    committed: text,
-                                    tentative,
-                                });
+                                // Forward whenever there is new committed text OR a
+                                // tentative update (LocalAgreement live tail).
+                                // VadGated always has empty tentative so its behaviour
+                                // is unchanged: only sends on committed text.
+                                if committed.is_some() || !tentative.is_empty() {
+                                    let _ = update_tx.send(TranscriptUpdate {
+                                        source,
+                                        committed: committed.unwrap_or_default(),
+                                        tentative,
+                                    });
+                                }
                             }
-                            Ok(_) => {}
                             Err(e) => {
                                 error!(source = ?source, error = %e, "feed error");
                             }

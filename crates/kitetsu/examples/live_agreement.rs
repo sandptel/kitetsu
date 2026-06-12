@@ -1,15 +1,17 @@
-//! VAD-gated live transcription from mic and system audio simultaneously.
+//! LocalAgreement-2 live transcription from mic and system audio simultaneously.
 //!
-//! Prints one log line per committed utterance as it arrives.
-//! For detailed state (recording / silence / inference timing), run with:
-//!   RUST_LOG=kitetsu=debug cargo run -p kitetsu --example live_transcribe
+//! Prints one log line per update: committed text appears normally, tentative
+//! (in-progress words not yet confirmed) is prefixed with `~`.
 //!
-//! Usage: `cargo run -p kitetsu --example live_transcribe`
+//! For detailed state (recording / silence / inference pass timing), run with:
+//!   RUST_LOG=kitetsu=debug cargo run -p kitetsu --example live_agreement
+//!
+//! Usage: `cargo run -p kitetsu --example live_agreement`
 //!
 //! Prerequisites:
 //!   - A GGML Whisper model at `$KITETSU_WHISPER_MODEL` or
 //!     `$XDG_DATA_HOME/kitetsu/models/ggml-base.en.bin`.
-//!     TIP: ggml-tiny.en runs ~4-6x faster with acceptable accuracy.
+//!     TIP: ggml-tiny.en runs ~4-6x faster — strongly recommended for LA-2.
 //!   - PipeWire-pulse or PulseAudio running.
 
 use std::io::BufRead as _;
@@ -38,10 +40,11 @@ fn main() -> anyhow::Result<()> {
     println!("Loading models (one per source)...");
     let sources = [StreamSource::Mic, StreamSource::System];
     let (session, update_rx) =
-        StreamSession::start(&sources, AudioModel::Default, StreamMode::VadGated)
+        StreamSession::start(&sources, AudioModel::Default, StreamMode::LocalAgreement)
             .context("failed to start streaming session")?;
-    println!("Models ready. Listening (VAD-gated). Press Enter to stop.");
-    println!("(RUST_LOG=kitetsu=debug shows recording/inference state)\n");
+    println!("Models ready. Listening (LocalAgreement-2). Press Enter to stop.");
+    println!("Legend: [MIC]/[SYS] = committed text | ~[MIC]/~[SYS] = tentative (in-progress)");
+    println!("(RUST_LOG=kitetsu=debug shows each inference pass with sample count and timing)\n");
 
     let display = std::thread::spawn(move || {
         for update in &update_rx {
@@ -50,8 +53,13 @@ fn main() -> anyhow::Result<()> {
                 StreamSource::Mic => "MIC",
                 StreamSource::System => "SYS",
             };
+            // Committed text: finalized, agreed by two consecutive passes.
             if !update.committed.is_empty() {
                 println!("[{ts}] [{src}] {}", update.committed);
+            }
+            // Tentative tail: heard but not yet confirmed by a second pass.
+            if !update.tentative.is_empty() {
+                println!("[{ts}] ~[{src}] {}", update.tentative);
             }
         }
     });
