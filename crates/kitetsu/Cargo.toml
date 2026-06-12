@@ -39,11 +39,15 @@ tracing = "0.1"
 thiserror = "2"
 
 [[example]]
-name = "live_transcribe"
+name = "moonshine_transcribe"
 required-features = ["onnx"]
 
 [[example]]
-name = "quant_transcribe"
+name = "moonshine_quant_transcribe"
+required-features = ["onnx"]
+
+[[example]]
+name = "live_moonshine_transcribe"
 required-features = ["onnx"]
 
 [[example]]

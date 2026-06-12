@@ -22,7 +22,9 @@ pub use capture::{
     CaptureConfig, Devices, Recorder, RecordingHandle, capture_to_wav, discover_default_devices,
 };
 pub use error::ListenerError;
-pub use transcriber::{AudioModel, MoonshineVariant, Quantization, Transcriber};
+pub use transcriber::{
+    AudioModel, LiveConfig, LiveTranscriber, MoonshineVariant, Quantization, Transcriber,
+};
 
 // ── Sink selection types ──────────────────────────────────────────────────────
 

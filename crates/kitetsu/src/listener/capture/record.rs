@@ -10,6 +10,7 @@
 
 use std::io::Write as _;
 use std::path::Path;
+use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -236,13 +237,33 @@ impl Recorder {
 
     /// Spawn the capture thread and return a handle for stopping it.
     pub fn start(self) -> RecordingHandle {
+        self.start_inner(None)
+    }
+
+    /// Spawn the capture thread and also stream each captured chunk (16 kHz
+    /// mono f32) through the returned channel as it arrives, for live
+    /// transcription. The full buffer is still available via
+    /// [`RecordingHandle::stop`]. The channel disconnects when the capture
+    /// thread ends (i.e. after [`RecordingHandle::stop`] joins it).
+    pub fn start_streaming(self) -> (RecordingHandle, Receiver<Vec<f32>>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        (self.start_inner(Some(tx)), rx)
+    }
+
+    fn start_inner(self, tx: Option<Sender<Vec<f32>>>) -> RecordingHandle {
         let stop = Arc::new(AtomicBool::new(false));
         let sample_count = Arc::new(AtomicUsize::new(0));
         let stop_flag = Arc::clone(&stop);
         let count_flag = Arc::clone(&sample_count);
 
         let thread = std::thread::spawn(move || {
-            record_until_stop(&self.device, self.label, &stop_flag, &count_flag)
+            record_until_stop(
+                &self.device,
+                self.label,
+                &stop_flag,
+                &count_flag,
+                tx.as_ref(),
+            )
         });
 
         RecordingHandle {
@@ -282,6 +303,7 @@ fn record_until_stop(
     label: &'static str,
     stop: &AtomicBool,
     sample_count: &AtomicUsize,
+    chunk_tx: Option<&Sender<Vec<f32>>>,
 ) -> Result<Vec<f32>, ListenerError> {
     const RATE_16K: u32 = 16_000;
 
@@ -316,10 +338,16 @@ fn record_until_stop(
         simple
             .read(&mut buf)
             .map_err(|_| ListenerError::CaptureFailed("PulseAudio read returned an error"))?;
-        samples.extend(
-            buf.chunks_exact(2)
-                .map(|b| f32::from(i16::from_le_bytes([b[0], b[1]])) / 32_768.0),
-        );
+        let chunk: Vec<f32> = buf
+            .chunks_exact(2)
+            .map(|b| f32::from(i16::from_le_bytes([b[0], b[1]])) / 32_768.0)
+            .collect();
+        // Stream the chunk to a live consumer if one is attached. A send error
+        // means the receiver was dropped — keep recording into the full buffer.
+        if let Some(tx) = chunk_tx {
+            let _ = tx.send(chunk.clone());
+        }
+        samples.extend_from_slice(&chunk);
         sample_count.store(samples.len(), Ordering::Relaxed);
     }
 

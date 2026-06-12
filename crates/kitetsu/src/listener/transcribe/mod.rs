@@ -3,10 +3,13 @@
 //! `models/` defines `AudioModel` (the public backend selector), `MoonshineVariant`,
 //! and the internal `LoadedModel` handle — one file per backend, unified by enum
 //! dispatch. `Transcriber` is defined here as the load-once / reuse integration
-//! point. Does no audio capture.
+//! point. `live` adds `LiveTranscriber`, a rolling-window wrapper for streaming
+//! partials. Does no audio capture.
 
+mod live;
 mod models;
 
+pub use live::{LiveConfig, LiveTranscriber};
 pub use models::{AudioModel, MoonshineVariant, Quantization};
 
 use std::sync::mpsc::Sender;

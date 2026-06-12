@@ -41,7 +41,7 @@ use kitetsu::listener::{
 };
 
 // ── Swap this one line to test each precision ───────────────────────────────────
-const QUANTIZATION: Quantization = Quantization::Fp32;
+const QUANTIZATION: Quantization = Quantization::Int8;
 // Options: Quantization::Fp32 | Fp16 | Int8 | Int4
 const VARIANT: MoonshineVariant = MoonshineVariant::Tiny;
 
