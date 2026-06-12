@@ -7,7 +7,7 @@
 
 mod models;
 
-pub use models::{AudioModel, MoonshineVariant};
+pub use models::{AudioModel, MoonshineVariant, Quantization};
 
 use std::sync::mpsc::Sender;
 

@@ -11,10 +11,13 @@
 //! Usage: `cargo run -p kitetsu --example live_transcribe`
 //!
 //! Prerequisites:
-//!   - Moonshine base ONNX files at `$XDG_DATA_HOME/kitetsu/models/moonshine-base/`
+//!   - A Moonshine v2 streaming model dir at
+//!     `$XDG_DATA_HOME/kitetsu/models/moonshine-tiny-streaming-en/`
 //!     (override with `$KITETSU_MOONSHINE_MODEL=/path/to/dir`).
-//!     Files needed: `encoder_model.onnx`, `decoder_model_merged.onnx`, `tokenizer.json`.
-//!     Download from `onnx-community/moonshine-base-ONNX` on HuggingFace.
+//!     Files needed: `frontend.onnx`, `encoder.onnx`, `adapter.onnx`,
+//!     `cross_kv.onnx`, `decoder_kv.onnx`, `tokenizer.bin`, `streaming_config.json`.
+//!     Download: https://blob.handy.computer/moonshine-tiny-streaming-en.tar.gz
+//!     (see `examples/quant_transcribe.rs` for small/medium + quantization).
 //!   - PipeWire-pulse or PulseAudio running.
 
 use std::io::{BufRead as _, Write as _};

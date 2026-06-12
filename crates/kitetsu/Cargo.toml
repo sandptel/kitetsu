@@ -43,6 +43,10 @@ name = "live_transcribe"
 required-features = ["onnx"]
 
 [[example]]
+name = "quant_transcribe"
+required-features = ["onnx"]
+
+[[example]]
 name = "transcribe_audio"
 required-features = ["whisper"]
 

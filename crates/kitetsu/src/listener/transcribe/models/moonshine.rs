@@ -1,8 +1,10 @@
-//! Moonshine ONNX backend via transcribe-rs.
+//! Moonshine v2 (streaming) ONNX backend via transcribe-rs.
 //!
-//! `MoonshineBackend` wraps `transcribe_rs::onnx::moonshine::MoonshineModel` and
-//! adapts it to the `LoadedModel` interface. Inference is synchronous; there is
-//! no incremental progress callback — a single `100` is sent on completion.
+//! `MoonshineBackend` wraps `transcribe_rs::onnx::moonshine::StreamingModel` —
+//! the 5-session streaming pipeline (frontend → encoder → adapter → cross_kv →
+//! decoder_kv) — and adapts it to the `LoadedModel` interface. Inference is
+//! synchronous and run over the whole buffer at once here; a single `100` is
+//! sent on completion (no incremental callback).
 //!
 //! The `#[cfg(feature = "onnx")]` / `#[cfg(not(feature = "onnx"))]` twin pattern
 //! keeps call sites in `models/mod.rs` unconditional — the stub returns
@@ -14,32 +16,28 @@ use std::sync::mpsc::Sender;
 
 use crate::listener::ListenerError;
 
-use super::{LoadedModel, MoonshineVariant};
+use super::{LoadedModel, MoonshineVariant, Quantization};
 
 // ── Model handle (feature-gated) ───────────────────────────────────────────────
 
-/// Wraps a loaded Moonshine ONNX model ready for inference.
+/// Wraps a loaded Moonshine v2 streaming model ready for inference.
 ///
-/// `MoonshineModel` is `Send` but not `Sync` (inference takes `&mut self`).
+/// `StreamingModel` is `Send` but not `Sync` (inference takes `&mut self`).
 /// For two concurrent streams, load two separate `MoonshineBackend` instances
-/// rather than sharing one behind a `Mutex` — model files are small and the
-/// parallel-inference gain outweighs the extra memory.
+/// rather than sharing one behind a `Mutex` — the parallel-inference gain
+/// outweighs the extra memory.
 #[cfg(feature = "onnx")]
 pub(crate) struct MoonshineBackend {
-    model: transcribe_rs::onnx::moonshine::MoonshineModel,
+    model: transcribe_rs::onnx::moonshine::StreamingModel,
 }
 
 #[cfg(feature = "onnx")]
 impl MoonshineBackend {
     /// Run synchronous Moonshine inference on `samples` (16 kHz mono f32).
     ///
-    /// Moonshine does not expose incremental decode steps; `progress_tx` receives
-    /// a single `100` when the call returns. The typical latency on a Zen 5
-    /// 10-core CPU is ~50 ms for a 5-second chunk — fast enough that a progress
-    /// bar adds little value, but the channel is kept for API compatibility.
-    ///
-    /// Audio must be between 0.1 s and 64 s; shorter or longer inputs are
-    /// rejected by the ONNX model itself with a `Transcription` error.
+    /// Moonshine does not expose incremental decode steps through this path;
+    /// `progress_tx` receives a single `100` when the call returns. Latency on a
+    /// Zen 5 CPU is tens of milliseconds for a few seconds of audio.
     pub(crate) fn transcribe(
         &mut self,
         samples: &[f32],
@@ -48,7 +46,7 @@ impl MoonshineBackend {
         use transcribe_rs::{SpeechModel as _, TranscribeOptions};
 
         let options = TranscribeOptions {
-            // Pin to English; Moonshine tiny/base are English-only models anyway.
+            // Pin to English; the streaming variants are English-only anyway.
             language: Some("en".to_string()),
             ..Default::default()
         };
@@ -69,39 +67,46 @@ impl MoonshineBackend {
 
 // ── Backend entry point (cfg-gated twin) ──────────────────────────────────────
 
-/// Load a Moonshine ONNX model from `model_dir` and return a live engine handle.
+/// Load a Moonshine v2 streaming model from `model_dir` and return a live handle.
 ///
-/// `model_dir` must contain `encoder_model.onnx`, `decoder_model_merged.onnx`,
-/// and `tokenizer.json`. Download from `onnx-community/moonshine-base-ONNX` (or
-/// `moonshine-tiny-ONNX`) on HuggingFace.
+/// `model_dir` must contain the 5 ONNX sessions (`frontend`, `encoder`,
+/// `adapter`, `cross_kv`, `decoder_kv`), `tokenizer.bin`, and
+/// `streaming_config.json`. `quantization` selects the preferred precision file
+/// (`{name}.int8.onnx` etc.), falling back to FP32 if that file is absent.
 ///
-/// Maps our `MoonshineVariant` to transcribe-rs's internal variant enum.
+/// `variant` is informational — the streaming engine reads its real dimensions
+/// from `streaming_config.json`. Threads default to the host's parallelism.
 #[cfg(feature = "onnx")]
 pub(crate) fn load(
     model_dir: PathBuf,
     variant: MoonshineVariant,
+    quantization: Quantization,
 ) -> Result<LoadedModel, ListenerError> {
-    use transcribe_rs::onnx::{Quantization, moonshine::MoonshineVariant as TrVariant};
+    use transcribe_rs::onnx::{Quantization as TrQuant, moonshine::StreamingModel};
 
-    let tr_variant = match variant {
-        MoonshineVariant::Tiny => TrVariant::Tiny,
-        MoonshineVariant::Base => TrVariant::Base,
+    let tr_quant = match quantization {
+        Quantization::Fp32 => TrQuant::FP32,
+        Quantization::Fp16 => TrQuant::FP16,
+        Quantization::Int8 => TrQuant::Int8,
+        Quantization::Int4 => TrQuant::Int4,
     };
+
+    let num_threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
 
     tracing::info!(
         dir = %model_dir.display(),
         ?variant,
-        "loading moonshine model",
+        ?quantization,
+        num_threads,
+        "loading moonshine v2 streaming model",
     );
 
-    let model = transcribe_rs::onnx::moonshine::MoonshineModel::load(
-        &model_dir,
-        tr_variant,
-        &Quantization::FP32,
-    )
-    .map_err(|e| ListenerError::ModelUnavailable(e.to_string()))?;
+    let model = StreamingModel::load(&model_dir, num_threads, &tr_quant)
+        .map_err(|e| ListenerError::ModelUnavailable(e.to_string()))?;
 
-    tracing::info!(dir = %model_dir.display(), "moonshine model ready");
+    tracing::info!(dir = %model_dir.display(), "moonshine v2 model ready");
 
     Ok(LoadedModel::Moonshine(MoonshineBackend { model }))
 }
@@ -111,8 +116,9 @@ pub(crate) fn load(
 pub(crate) fn load(
     model_dir: PathBuf,
     variant: MoonshineVariant,
+    quantization: Quantization,
 ) -> Result<LoadedModel, ListenerError> {
-    let _ = (model_dir, variant);
+    let _ = (model_dir, variant, quantization);
     Err(ListenerError::BackendNotCompiled(
         "onnx — enable the 'onnx' feature",
     ))

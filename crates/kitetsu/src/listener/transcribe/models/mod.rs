@@ -18,17 +18,52 @@ pub(crate) mod whisper;
 
 // ── Public selector ────────────────────────────────────────────────────────────
 
-/// Moonshine model size. Both variants are English-only.
+/// Moonshine v2 streaming model size. All variants are English-only.
 ///
-/// `Tiny` (26 M params) is the fastest choice; `Base` (58 M params) trades a
-/// few extra milliseconds for slightly lower WER. Either is several times faster
-/// than Whisper base.en on CPU alone.
+/// The variant selects which model directory the default-path helper points at;
+/// the streaming engine reads its actual dimensions from `streaming_config.json`
+/// inside that directory, so the variant is informational once an explicit
+/// `model_dir` is given. `Tiny` is fastest; `Medium` trades latency for WER.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MoonshineVariant {
-    /// 26 M params — fastest, lowest memory footprint.
+    /// Smallest, fastest, lowest memory footprint.
     Tiny,
-    /// 58 M params — slightly better WER, still very fast.
-    Base,
+    /// Middle ground between latency and accuracy.
+    Small,
+    /// Best accuracy, highest latency of the three.
+    Medium,
+}
+
+impl MoonshineVariant {
+    /// Default model-directory name for this variant under
+    /// `$XDG_DATA_HOME/kitetsu/models/`.
+    pub(crate) fn dir_name(self) -> &'static str {
+        match self {
+            MoonshineVariant::Tiny => "moonshine-tiny-streaming-en",
+            MoonshineVariant::Small => "moonshine-small-streaming-en",
+            MoonshineVariant::Medium => "moonshine-medium-streaming-en",
+        }
+    }
+}
+
+/// Preferred ONNX precision. Selects which quantized model file to load.
+///
+/// Quantization is baked into the model file — this is file selection, not a
+/// runtime knob. The backend tries the requested precision first and falls back
+/// to FP32 if that file is absent, so any variant is safe to request. `Int8`
+/// roughly halves inference time at a small WER cost; `Int4` is the most
+/// aggressive. Always present regardless of compiled features.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Quantization {
+    /// Full precision — the safe default; always present on disk.
+    #[default]
+    Fp32,
+    /// Half precision — smaller, often faster, negligible WER change.
+    Fp16,
+    /// 8-bit — ~2× faster inference, slight WER cost.
+    Int8,
+    /// 4-bit — most aggressive; largest WER cost.
+    Int4,
 }
 
 /// Selects which speech-recognition backend and model files to use.
@@ -48,11 +83,13 @@ pub enum MoonshineVariant {
 pub enum AudioModel {
     /// Resolve the best available backend at load time (see above).
     Default,
-    /// Moonshine ONNX directory containing `encoder_model.onnx`,
-    /// `decoder_model_merged.onnx`, and `tokenizer.json`.
+    /// Moonshine v2 streaming directory containing the 5 ONNX sessions
+    /// (`frontend`, `encoder`, `adapter`, `cross_kv`, `decoder_kv`),
+    /// `tokenizer.bin`, and `streaming_config.json`.
     Moonshine {
         model_dir: PathBuf,
         variant: MoonshineVariant,
+        quantization: Quantization,
     },
     /// Whisper GGML model file (requires the `whisper` feature).
     Whisper { model_path: PathBuf },
@@ -143,7 +180,11 @@ impl AudioModel {
             AudioModel::Default => {
                 // Prefer Moonshine (onnx) when the feature is compiled in.
                 #[cfg(feature = "onnx")]
-                return moonshine::load(Self::default_moonshine_dir(), MoonshineVariant::Base);
+                return moonshine::load(
+                    Self::default_moonshine_dir(),
+                    MoonshineVariant::Tiny,
+                    Quantization::default(),
+                );
 
                 // Fall back to Whisper when only that feature is compiled in.
                 #[cfg(all(not(feature = "onnx"), feature = "whisper"))]
@@ -155,7 +196,11 @@ impl AudioModel {
                     "no STT backend compiled — enable the 'onnx' or 'whisper' feature",
                 ));
             }
-            AudioModel::Moonshine { model_dir, variant } => moonshine::load(model_dir, variant),
+            AudioModel::Moonshine {
+                model_dir,
+                variant,
+                quantization,
+            } => moonshine::load(model_dir, variant, quantization),
             AudioModel::Whisper { model_path } => whisper::load(model_path),
             // reserved: see PLAN §6.6 — wired in a future iteration
             AudioModel::Whisperfile { .. } => Err(ListenerError::BackendNotCompiled(
@@ -166,17 +211,22 @@ impl AudioModel {
 
     // ── Default path helpers ───────────────────────────────────────────────────
 
-    /// Default Moonshine model directory.
+    /// Default Moonshine v2 streaming model directory (Tiny variant).
     ///
     /// Checks `$KITETSU_MOONSHINE_MODEL` first, then falls back to
-    /// `$XDG_DATA_HOME/kitetsu/models/moonshine-base/`.
-    /// Expected contents: `encoder_model.onnx`, `decoder_model_merged.onnx`,
-    /// `tokenizer.json` (from `onnx-community/moonshine-base-ONNX` on HuggingFace).
+    /// `$XDG_DATA_HOME/kitetsu/models/moonshine-tiny-streaming-en/`.
+    /// Expected contents: `frontend.onnx`, `encoder.onnx`, `adapter.onnx`,
+    /// `cross_kv.onnx`, `decoder_kv.onnx`, `tokenizer.bin`,
+    /// `streaming_config.json` (from the `moonshine-tiny-streaming-en` tarball,
+    /// see `examples/quant_transcribe.rs` for the download link).
     pub(crate) fn default_moonshine_dir() -> PathBuf {
         if let Ok(p) = std::env::var("KITETSU_MOONSHINE_MODEL") {
             return PathBuf::from(p);
         }
-        xdg_data_base().join("kitetsu/models/moonshine-base")
+        xdg_data_base().join(format!(
+            "kitetsu/models/{}",
+            MoonshineVariant::Tiny.dir_name()
+        ))
     }
 
     /// Default Whisper model file path.
@@ -210,8 +260,9 @@ mod tests {
     #[test]
     fn moonshine_unavailable_when_dir_absent() {
         let m = AudioModel::Moonshine {
-            model_dir: PathBuf::from("/nonexistent/moonshine-base-test-sentinel"),
-            variant: MoonshineVariant::Base,
+            model_dir: PathBuf::from("/nonexistent/moonshine-streaming-test-sentinel"),
+            variant: MoonshineVariant::Tiny,
+            quantization: Quantization::Int8,
         };
         assert!(!m.available());
     }
