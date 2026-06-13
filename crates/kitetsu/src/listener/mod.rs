@@ -24,8 +24,9 @@ pub use capture::{
 pub use error::ListenerError;
 #[cfg(feature = "api")]
 pub use transcriber::{
-    ApiConfig, ApiError, ApiTranscriber, KeyError, ANTHROPIC_API_KEY, OPENAI_API_KEY, load_dotenv,
-    require,
+    ApiConfig, ApiError, ApiTranscriber, KeyError, ANTHROPIC_API_KEY, OPENAI_API_KEY,
+    RealtimeError, RealtimeSession, SessionSink, SessionStream, TranscriptEvent,
+    load_dotenv, require,
 };
 pub use transcriber::{
     AudioModel, LiveConfig, LiveTranscriber, LocalTranscriber, MoonshineVariant, Quantization,

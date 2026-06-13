@@ -19,7 +19,14 @@ whisper = ["dep:whisper-rs"]
 whisperfile = ["dep:transcribe-rs", "transcribe-rs/whisperfile"]
 # OpenAI REST transcription backend (Decision #25). Off by default — pulls in
 # reqwest; the local Moonshine/Whisper paths need no network stack.
-api = ["dep:reqwest", "dep:serde", "dep:serde_json"]
+api = [
+    "dep:reqwest",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:tokio-tungstenite",
+    "dep:futures-util",
+    "dep:base64",
+]
 
 [dependencies]
 # PulseAudio / PipeWire-pulse audio capture — §5.1 table.
@@ -33,7 +40,9 @@ transcribe-rs = { version = "0.3", default-features = false, optional = true }
 
 # Async runtime for spawn_blocking (capture + inference stay on blocking threads).
 # `time` is needed for the progress-polling sleep in the example and future UI pipe.
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+# `net` is needed by tokio-tungstenite's TCP connector (api/realtime). `sync` is
+# needed for the unbounded_channel bridge from std::sync::mpsc to async (realtime).
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "sync"] }
 
 # Structured logging — §5.1 table.
 tracing = "0.1"
@@ -51,6 +60,20 @@ reqwest = { version = "0.12", default-features = false, features = [
 ], optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
+
+# OpenAI Realtime WebSocket transcription backend (`api` feature, Decision #28).
+# Approved outside §5.1 (2026-06-13): tokio-tungstenite (WS client, rustls-tls
+# for Nix-friendly TLS), futures-util (split sink/stream, StreamExt/SinkExt),
+# base64 (encode PCM16 frames for input_audio_buffer.append).
+tokio-tungstenite = { version = "0.24", default-features = false, features = [
+    "connect",
+    "rustls-tls-webpki-roots",
+], optional = true }
+futures-util = { version = "0.3", default-features = false, features = [
+    "sink",
+    "std",
+], optional = true }
+base64 = { version = "0.22", optional = true }
 
 [[example]]
 name = "moonshine_transcribe"
@@ -70,6 +93,10 @@ required-features = ["whisper"]
 
 [[example]]
 name = "api_transcribe"
+required-features = ["api"]
+
+[[example]]
+name = "live_api_transcribe"
 required-features = ["api"]
 
 [dev-dependencies]
