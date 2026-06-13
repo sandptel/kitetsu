@@ -9,17 +9,20 @@
 //! — for now the daemon logs the window's size. Not here: the pipes, the LLM
 //! client, or output writing.
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use tracing::{info, warn};
 
 use crate::listener::{
-    KeyError, ListenerError, OPENAI_API_KEY, RealtimeError, RealtimeSession, Recorder,
-    RecordingHandle, TranscriptEvent, discover_default_devices, load_dotenv, require,
+    ANTHROPIC_API_KEY, KeyError, ListenerError, OPENAI_API_KEY, RealtimeError, RealtimeSession,
+    Recorder, RecordingHandle, TranscriptEvent, discover_default_devices, load_dotenv, require,
 };
 
-use super::config::{Config, Pipe1Config};
+use super::config::{Config, LlmBackendKind, OutputMode, Pipe1Config};
 use super::ipc::{self, Command, IpcError};
+use super::llm::{Backend, LlmError};
+use super::pipes::{History, Labels, PipeContext, run_pipe1};
 use super::window::{Source, WindowManager};
 
 /// OpenAI Realtime transcription endpoint (pipe1 live path).
@@ -40,6 +43,21 @@ pub enum DaemonError {
     /// A live-transcription WebSocket failed to connect at startup.
     #[error("realtime session connect: {0}")]
     Realtime(#[source] RealtimeError),
+    /// The LLM backend could not be constructed (e.g. missing key).
+    #[error("LLM backend: {0}")]
+    Llm(#[source] LlmError),
+}
+
+/// Owned, cheaply-cloneable pipe-1 runtime shared into each spawned trigger task.
+#[derive(Clone)]
+struct Pipe1Runtime {
+    backend: Arc<Backend>,
+    model: String,
+    system_prompt: Arc<str>,
+    labels: Arc<Labels>,
+    history: History,
+    out_dir: PathBuf,
+    mode: OutputMode,
 }
 
 /// Bind the control socket, start capture, and serve commands until `Stop`.
@@ -117,6 +135,32 @@ pub async fn run(config: Config, system_prompt: String) -> Result<(), DaemonErro
         handles.push(handle);
     }
 
+    // Build the pipe-1 runtime once (its LLM key may differ from the WS key when
+    // the configured llm_backend is anthropic).
+    let pipe1_rt = if config.pipe1.enabled {
+        let llm_key = match config.pipe1.llm_backend {
+            LlmBackendKind::Openai => api_key
+                .clone()
+                .expect("OpenAI key loaded when pipe1 is enabled"),
+            LlmBackendKind::Anthropic => require(ANTHROPIC_API_KEY).map_err(DaemonError::Key)?,
+        };
+        let backend = Backend::new(config.pipe1.llm_backend, llm_key).map_err(DaemonError::Llm)?;
+        Some(Pipe1Runtime {
+            backend: Arc::new(backend),
+            model: config.pipe1.llm_model.clone(),
+            system_prompt: Arc::from(system_prompt.as_str()),
+            labels: Arc::new(Labels {
+                mic: config.audio.mic_label.clone(),
+                system: config.audio.system_label.clone(),
+            }),
+            history: Arc::new(Mutex::new(Vec::new())),
+            out_dir: config.output.dir.clone(),
+            mode: config.output.mode,
+        })
+    } else {
+        None
+    };
+
     let listener = ipc::bind()?;
     info!(socket = %ipc::socket_path().display(), "teleprompter daemon listening");
 
@@ -147,10 +191,34 @@ pub async fn run(config: Config, system_prompt: String) -> Result<(), DaemonErro
                     mic_chars = window.mic_text.len(),
                     sys_secs = format!("{:.1}", window.sys_secs()),
                     sys_chars = window.sys_text.len(),
-                    "window snapshot (pipes not wired yet)",
+                    "window snapshot",
                 );
                 let ack = format!("queued window {}", window.n);
                 let _ = ipc::write_ack(&mut stream, &ack).await;
+
+                // Fire pipe1 in the background; the ack is already sent so the
+                // client returns immediately while the suggestion lands in the file.
+                if let Some(rt) = &pipe1_rt {
+                    let rt = rt.clone();
+                    let window = Arc::new(window);
+                    tokio::spawn(async move {
+                        let ctx = PipeContext {
+                            backend: rt.backend.as_ref(),
+                            system_prompt: rt.system_prompt.as_ref(),
+                            labels: rt.labels.as_ref(),
+                            out_dir: rt.out_dir.as_path(),
+                            mode: rt.mode,
+                        };
+                        match run_pipe1(&window, &rt.history, &rt.model, &ctx).await {
+                            Ok(reply) => info!(
+                                window = window.n,
+                                chars = reply.len(),
+                                "pipe1 suggestion written",
+                            ),
+                            Err(e) => warn!(window = window.n, error = %e, "pipe1 failed"),
+                        }
+                    });
+                }
             }
             Command::Stop => {
                 info!("stop received — shutting down");
