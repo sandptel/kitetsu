@@ -1,17 +1,20 @@
-//! Pipe 1 end-to-end, interactive: continuously capture mic + system audio and
-//! live-transcribe both over the Realtime WS while you talk. Each time you press
-//! Enter, the current window (everything heard since the last press) is sent to
-//! the LLM with prompt.md + context.md, the suggestion is printed and appended to
-//! `out/pipe1.md`, and the window resets — recording never stops.
+//! Pipes 1 + 2 end-to-end, interactive: continuously capture mic + system audio
+//! and live-transcribe both over the Realtime WS while you talk. Each time you
+//! press Enter, the current window (everything heard since the last press) fires
+//! both pipes in parallel — pipe1 (accumulated live transcript, fast) and pipe2
+//! (on-trigger REST re-transcription of the raw audio, slower but more accurate).
+//! Each suggestion is printed and appended to its `out/pipe{1,2}.md`, then the
+//! window resets — recording never stops.
 //!
-//! This is the daemon's pipe-1 path driven by the keyboard instead of the control
+//! This is the daemon's pipe path driven by the keyboard instead of the control
 //! socket, so you can watch the live → LLM → file flow in one terminal.
 //!
 //! Usage:
 //!   cargo run -p kitetsu --features teleprompter --example teleprompter_pipe1
 //!
 //! Requires prompt.md + context.md next to config.toml, `OPENAI_API_KEY` (Realtime
-//! WS + pipe1 LLM when openai), and `ANTHROPIC_API_KEY` if pipe1 uses anthropic.
+//! WS + REST transcription + LLM when openai), and `ANTHROPIC_API_KEY` if a pipe's
+//! llm_backend is anthropic.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -19,12 +22,12 @@ use std::sync::{Arc, Mutex};
 use anyhow::Context as _;
 
 use kitetsu::listener::{
-    ANTHROPIC_API_KEY, OPENAI_API_KEY, RealtimeError, RealtimeSession, Recorder, RecordingHandle,
-    TranscriptEvent, discover_default_devices, load_dotenv, require,
+    ANTHROPIC_API_KEY, ApiConfig, ApiTranscriber, OPENAI_API_KEY, RealtimeError, RealtimeSession,
+    Recorder, RecordingHandle, TranscriptEvent, discover_default_devices, load_dotenv, require,
 };
 use kitetsu::teleprompter::config::LlmBackendKind;
 use kitetsu::teleprompter::{
-    Backend, Config, History, Labels, PipeContext, Source, WindowManager, run_pipe1,
+    Backend, Config, History, Labels, PipeContext, Source, WindowManager, run_pipe1, run_pipe2,
 };
 
 const REALTIME_ENDPOINT: &str = "wss://api.openai.com/v1/realtime?intent=transcription";
@@ -52,20 +55,39 @@ async fn main() -> anyhow::Result<()> {
         load_dotenv(&cwd.join(".env"));
     }
     let openai_key =
-        require(OPENAI_API_KEY).context("OPENAI_API_KEY is needed for the Realtime WS")?;
-    let llm_key = match config.pipe1.llm_backend {
-        LlmBackendKind::Openai => openai_key.clone(),
-        LlmBackendKind::Anthropic => {
-            require(ANTHROPIC_API_KEY).context("pipe1.llm_backend = anthropic needs the key")?
-        }
+        require(OPENAI_API_KEY).context("OPENAI_API_KEY is needed for the Realtime WS + REST")?;
+    let make_backend = |kind: LlmBackendKind| -> anyhow::Result<Backend> {
+        let key = match kind {
+            LlmBackendKind::Openai => openai_key.clone(),
+            LlmBackendKind::Anthropic => {
+                require(ANTHROPIC_API_KEY).context("llm_backend = anthropic needs the key")?
+            }
+        };
+        Backend::new(kind, key).context("building LLM backend")
     };
-    let backend = Backend::new(config.pipe1.llm_backend, llm_key).context("building LLM backend")?;
-    let model = config.pipe1.llm_model.clone();
+
+    // pipe1 (live) + pipe2 (REST re-transcribe) backends, models, histories.
+    let p1_backend = make_backend(config.pipe1.llm_backend)?;
+    let p1_model = config.pipe1.llm_model.clone();
+    let p1_history: History = Arc::new(Mutex::new(Vec::new()));
+
+    let p2_backend = make_backend(config.pipe2.llm_backend)?;
+    let p2_model = config.pipe2.llm_model.clone();
+    let p2_history: History = Arc::new(Mutex::new(Vec::new()));
+    let transcriber = ApiTranscriber::new(
+        openai_key.clone(),
+        ApiConfig {
+            model: config.pipe2.stt_model.clone(),
+            language: config.pipe2.stt_language.clone(),
+            ..ApiConfig::default()
+        },
+    )
+    .context("building pipe2 REST transcriber")?;
+
     let labels = Labels {
         mic: config.audio.mic_label.clone(),
         system: config.audio.system_label.clone(),
     };
-    let history: History = Arc::new(Mutex::new(Vec::new()));
 
     // ── Capture + live WS per source → shared window ──────────────────────────
     let windows = Arc::new(Mutex::new(WindowManager::new(config.audio.max_window_secs)));
@@ -122,16 +144,33 @@ async fn main() -> anyhow::Result<()> {
             window.sys_text.len(),
         );
 
-        let ctx = PipeContext {
-            backend: &backend,
+        let p1_ctx = PipeContext {
+            backend: &p1_backend,
             system_prompt: &system_prompt,
             labels: &labels,
             out_dir: config.output.dir.as_path(),
             mode: config.output.mode,
         };
-        match run_pipe1(&window, &history, &model, &ctx).await {
-            Ok(reply) => println!("\n>>> {reply}\n"),
-            Err(e) => eprintln!("pipe1 error: {e}\n"),
+        let p2_ctx = PipeContext {
+            backend: &p2_backend,
+            system_prompt: &system_prompt,
+            labels: &labels,
+            out_dir: config.output.dir.as_path(),
+            mode: config.output.mode,
+        };
+
+        // Fire both pipes in parallel; pipe1 (live) usually returns first.
+        let (r1, r2) = tokio::join!(
+            run_pipe1(&window, &p1_history, &p1_model, &p1_ctx),
+            run_pipe2(&window, &p2_history, &transcriber, &p2_model, &p2_ctx),
+        );
+        match r1 {
+            Ok(reply) => println!("\n[pipe1 live ] >>> {reply}"),
+            Err(e) => eprintln!("\n[pipe1 live ] error: {e}"),
+        }
+        match r2 {
+            Ok(reply) => println!("[pipe2 chunk] >>> {reply}\n"),
+            Err(e) => eprintln!("[pipe2 chunk] error: {e}\n"),
         }
     }
 

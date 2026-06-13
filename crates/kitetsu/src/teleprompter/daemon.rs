@@ -5,9 +5,9 @@
 //! chunk is appended to the shared [`WindowManager`]'s raw buffer (for the
 //! on-trigger pipes) and, when pipe1 is enabled, fed to a `RealtimeSession` whose
 //! completed utterances accumulate as live text. On `Next`, the window is
-//! snapshotted and reset; the pipes that consume it are wired in later iterations
-//! — for now the daemon logs the window's size. Not here: the pipes, the LLM
-//! client, or output writing.
+//! snapshotted and reset, then the enabled pipes run in the background: pipe1
+//! (live transcript) and pipe2 (REST re-transcription). Not here: the pipe bodies
+//! themselves (`pipes`), the LLM client (`llm`), or output writing (`output`).
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -15,14 +15,15 @@ use std::sync::{Arc, Mutex};
 use tracing::{info, warn};
 
 use crate::listener::{
-    ANTHROPIC_API_KEY, KeyError, ListenerError, OPENAI_API_KEY, RealtimeError, RealtimeSession,
-    Recorder, RecordingHandle, TranscriptEvent, discover_default_devices, load_dotenv, require,
+    ANTHROPIC_API_KEY, ApiConfig, ApiTranscriber, KeyError, ListenerError, OPENAI_API_KEY,
+    RealtimeError, RealtimeSession, Recorder, RecordingHandle, TranscriptEvent,
+    discover_default_devices, load_dotenv, require,
 };
 
 use super::config::{Config, LlmBackendKind, OutputMode, Pipe1Config};
 use super::ipc::{self, Command, IpcError};
 use super::llm::{Backend, LlmError};
-use super::pipes::{History, Labels, PipeContext, run_pipe1};
+use super::pipes::{History, Labels, PipeContext, run_pipe1, run_pipe2};
 use super::window::{Source, WindowManager};
 
 /// OpenAI Realtime transcription endpoint (pipe1 live path).
@@ -60,6 +61,20 @@ struct Pipe1Runtime {
     mode: OutputMode,
 }
 
+/// Owned, cheaply-cloneable pipe-2 runtime (adds the REST transcriber over the
+/// pipe-1 shape).
+#[derive(Clone)]
+struct Pipe2Runtime {
+    transcriber: Arc<ApiTranscriber>,
+    backend: Arc<Backend>,
+    model: String,
+    system_prompt: Arc<str>,
+    labels: Arc<Labels>,
+    history: History,
+    out_dir: PathBuf,
+    mode: OutputMode,
+}
+
 /// Bind the control socket, start capture, and serve commands until `Stop`.
 ///
 /// `config` and `system_prompt` are loaded once by the caller and held for the
@@ -69,13 +84,19 @@ struct Pipe1Runtime {
 pub async fn run(config: Config, system_prompt: String) -> Result<(), DaemonError> {
     log_summary(&config, &system_prompt);
 
-    // The live (pipe1) WS path authenticates with the OpenAI key; load `.env`
-    // from the working directory first so a key file there is picked up.
+    // OpenAI authenticates both the pipe1 WS and the pipe2 REST transcription;
+    // load `.env` from the working directory first so a key file there is picked up.
     if let Ok(cwd) = std::env::current_dir() {
         load_dotenv(&cwd.join(".env"));
     }
-    let api_key = if config.pipe1.enabled {
+    let openai_key = if config.pipe1.enabled || config.pipe2.enabled {
         Some(require(OPENAI_API_KEY).map_err(DaemonError::Key)?)
+    } else {
+        None
+    };
+    // Only pipe1 opens the realtime WS; pipe2 only needs the key for REST.
+    let ws_key = if config.pipe1.enabled {
+        openai_key.as_deref()
     } else {
         None
     };
@@ -107,7 +128,7 @@ pub async fn run(config: Config, system_prompt: String) -> Result<(), DaemonErro
             device,
             "telep-mic",
             Arc::clone(&windows),
-            api_key.as_deref(),
+            ws_key,
             &config.pipe1,
             &mut tasks,
         )
@@ -127,7 +148,7 @@ pub async fn run(config: Config, system_prompt: String) -> Result<(), DaemonErro
             device,
             "telep-sys",
             Arc::clone(&windows),
-            api_key.as_deref(),
+            ws_key,
             &config.pipe1,
             &mut tasks,
         )
@@ -135,24 +156,54 @@ pub async fn run(config: Config, system_prompt: String) -> Result<(), DaemonErro
         handles.push(handle);
     }
 
-    // Build the pipe-1 runtime once (its LLM key may differ from the WS key when
-    // the configured llm_backend is anthropic).
+    // Shared inputs for the LLM pipes (built once).
+    let system_prompt: Arc<str> = Arc::from(system_prompt.as_str());
+    let labels = Arc::new(Labels {
+        mic: config.audio.mic_label.clone(),
+        system: config.audio.system_label.clone(),
+    });
+
+    // Build the pipe-1 runtime once (its LLM key may differ from the OpenAI key
+    // when the configured llm_backend is anthropic).
     let pipe1_rt = if config.pipe1.enabled {
-        let llm_key = match config.pipe1.llm_backend {
-            LlmBackendKind::Openai => api_key
-                .clone()
-                .expect("OpenAI key loaded when pipe1 is enabled"),
-            LlmBackendKind::Anthropic => require(ANTHROPIC_API_KEY).map_err(DaemonError::Key)?,
-        };
-        let backend = Backend::new(config.pipe1.llm_backend, llm_key).map_err(DaemonError::Llm)?;
+        let backend = build_backend(
+            config.pipe1.llm_backend,
+            openai_key.as_deref(),
+        )?;
         Some(Pipe1Runtime {
             backend: Arc::new(backend),
             model: config.pipe1.llm_model.clone(),
-            system_prompt: Arc::from(system_prompt.as_str()),
-            labels: Arc::new(Labels {
-                mic: config.audio.mic_label.clone(),
-                system: config.audio.system_label.clone(),
-            }),
+            system_prompt: Arc::clone(&system_prompt),
+            labels: Arc::clone(&labels),
+            history: Arc::new(Mutex::new(Vec::new())),
+            out_dir: config.output.dir.clone(),
+            mode: config.output.mode,
+        })
+    } else {
+        None
+    };
+
+    // Build the pipe-2 runtime: a REST transcriber (OpenAI) plus its LLM backend.
+    let pipe2_rt = if config.pipe2.enabled {
+        let key = openai_key
+            .clone()
+            .expect("OpenAI key loaded when pipe2 is enabled");
+        let transcriber = ApiTranscriber::new(
+            key,
+            ApiConfig {
+                model: config.pipe2.stt_model.clone(),
+                language: config.pipe2.stt_language.clone(),
+                ..ApiConfig::default()
+            },
+        )
+        .map_err(|_| DaemonError::Key(KeyError::Missing(OPENAI_API_KEY)))?;
+        let backend = build_backend(config.pipe2.llm_backend, openai_key.as_deref())?;
+        Some(Pipe2Runtime {
+            transcriber: Arc::new(transcriber),
+            backend: Arc::new(backend),
+            model: config.pipe2.llm_model.clone(),
+            system_prompt: Arc::clone(&system_prompt),
+            labels: Arc::clone(&labels),
             history: Arc::new(Mutex::new(Vec::new())),
             out_dir: config.output.dir.clone(),
             mode: config.output.mode,
@@ -196,11 +247,14 @@ pub async fn run(config: Config, system_prompt: String) -> Result<(), DaemonErro
                 let ack = format!("queued window {}", window.n);
                 let _ = ipc::write_ack(&mut stream, &ack).await;
 
-                // Fire pipe1 in the background; the ack is already sent so the
-                // client returns immediately while the suggestion lands in the file.
+                // Fire the pipes in the background; the ack is already sent so the
+                // client returns immediately while suggestions land in the files.
+                // pipe1 (live) is fast; pipe2 (REST re-transcribe) lands later.
+                let window = Arc::new(window);
+
                 if let Some(rt) = &pipe1_rt {
                     let rt = rt.clone();
-                    let window = Arc::new(window);
+                    let window = Arc::clone(&window);
                     tokio::spawn(async move {
                         let ctx = PipeContext {
                             backend: rt.backend.as_ref(),
@@ -216,6 +270,29 @@ pub async fn run(config: Config, system_prompt: String) -> Result<(), DaemonErro
                                 "pipe1 suggestion written",
                             ),
                             Err(e) => warn!(window = window.n, error = %e, "pipe1 failed"),
+                        }
+                    });
+                }
+
+                if let Some(rt) = &pipe2_rt {
+                    let rt = rt.clone();
+                    let window = Arc::clone(&window);
+                    tokio::spawn(async move {
+                        let ctx = PipeContext {
+                            backend: rt.backend.as_ref(),
+                            system_prompt: rt.system_prompt.as_ref(),
+                            labels: rt.labels.as_ref(),
+                            out_dir: rt.out_dir.as_path(),
+                            mode: rt.mode,
+                        };
+                        match run_pipe2(&window, &rt.history, &rt.transcriber, &rt.model, &ctx).await
+                        {
+                            Ok(reply) => info!(
+                                window = window.n,
+                                chars = reply.len(),
+                                "pipe2 suggestion written",
+                            ),
+                            Err(e) => warn!(window = window.n, error = %e, "pipe2 failed"),
                         }
                     });
                 }
@@ -356,6 +433,18 @@ fn build_session_update(pipe1: &Pipe1Config) -> serde_json::Value {
             }
         }
     })
+}
+
+/// Build an LLM backend for the given kind, reusing the already-loaded OpenAI key
+/// for the OpenAI backend and requiring the Anthropic key otherwise.
+fn build_backend(kind: LlmBackendKind, openai_key: Option<&str>) -> Result<Backend, DaemonError> {
+    let key = match kind {
+        LlmBackendKind::Openai => openai_key
+            .map(str::to_owned)
+            .ok_or(DaemonError::Key(KeyError::Missing(OPENAI_API_KEY)))?,
+        LlmBackendKind::Anthropic => require(ANTHROPIC_API_KEY).map_err(DaemonError::Key)?,
+    };
+    Backend::new(kind, key).map_err(DaemonError::Llm)
 }
 
 /// Log the resolved pipes, models, and prompt size at startup so the operator

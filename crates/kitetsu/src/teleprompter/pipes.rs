@@ -3,14 +3,18 @@
 //! Each pipe builds a labeled user turn, calls the LLM with the stable system
 //! prompt plus the pipe's accumulating history, and writes a timestamped block to
 //! the pipe's output file. A failed call writes an error block (and the failed
-//! user turn is *not* committed to history, so continuity survives). Pipe 1 (live
-//! WS text) lives here; pipes 2 and 3 land in later iterations.
+//! user turn is *not* committed to history, so continuity survives).
+//! - Pipe 1: accumulated live WS transcript.
+//! - Pipe 2: on-trigger REST re-transcription of the raw window (more accurate).
+//! Pipe 3 (audio-direct) lands in the next iteration.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use tracing::warn;
+
+use crate::listener::{ApiError, ApiTranscriber};
 
 use super::config::OutputMode;
 use super::llm::{Backend, LlmError, Turn};
@@ -44,26 +48,82 @@ impl PipeContext<'_> {
     }
 }
 
+/// A pipe run failure: either transcription (pipe 2) or the LLM call.
+#[derive(Debug, thiserror::Error)]
+pub enum PipeError {
+    /// The LLM chat call failed.
+    #[error(transparent)]
+    Llm(#[from] LlmError),
+    /// REST transcription failed (pipe 2 only).
+    #[error("transcription failed: {0}")]
+    Transcribe(#[from] ApiError),
+}
+
 /// Run pipe 1 on a snapshotted window: send the accumulated live transcript to
 /// the LLM and write the suggestion to `<out_dir>/pipe1.md`.
-///
-/// On success the user + assistant turns are appended to `history` and the reply
-/// is returned. On failure an error block is written, a warning logged, and the
-/// error returned (history is left unchanged so a bad window doesn't poison it).
 pub async fn run_pipe1(
     window: &Window,
     history: &History,
     model: &str,
     ctx: &PipeContext<'_>,
-) -> Result<String, LlmError> {
+) -> Result<String, PipeError> {
     let started = Instant::now();
-    let out_path = ctx.out_path("pipe1.md");
-    let user_turn = Turn::user(transcript_content(window, ctx.labels));
+    let content = label_transcript(window.mic_text.trim(), window.sys_text.trim(), ctx.labels);
+    chat_and_write(window.n, content, history, model, ctx, "pipe1", started).await
+}
 
-    // Snapshot history + the new turn for the request without holding the lock
-    // across the await (the lock is touched only briefly, never during I/O).
+/// Run pipe 2 on a snapshotted window: REST-transcribe the raw mic + system
+/// audio (in parallel) with the configured STT model, then send that transcript
+/// to the LLM and write the suggestion to `<out_dir>/pipe2.md`.
+pub async fn run_pipe2(
+    window: &Window,
+    history: &History,
+    transcriber: &ApiTranscriber,
+    model: &str,
+    ctx: &PipeContext<'_>,
+) -> Result<String, PipeError> {
+    let started = Instant::now();
+    let out_path = ctx.out_path("pipe2.md");
+
+    let (mic, sys) = tokio::join!(
+        transcribe_side(transcriber, &window.mic_raw),
+        transcribe_side(transcriber, &window.sys_raw),
+    );
+    let (mic_text, sys_text) = match (mic, sys) {
+        (Ok(m), Ok(s)) => (m, s),
+        (Err(e), _) | (_, Err(e)) => {
+            let body = format!("**pipe2 error:** {e}");
+            if let Err(io) = write_block(&out_path, window.n, started.elapsed(), &body, ctx.mode) {
+                warn!(window = window.n, error = %io, "pipe2 failed to write error block");
+            }
+            warn!(window = window.n, error = %e, "pipe2 transcription failed");
+            return Err(PipeError::Transcribe(e));
+        }
+    };
+
+    let content = label_transcript(mic_text.trim(), sys_text.trim(), ctx.labels);
+    chat_and_write(window.n, content, history, model, ctx, "pipe2", started).await
+}
+
+/// Shared tail of every LLM pipe: append the user turn to history (without
+/// holding the lock across the await), call the LLM, commit the turns + write the
+/// block on success, or write an error block and leave history untouched.
+///
+/// `tag` names the pipe (`"pipe1"`); the output file is `<tag>.md`.
+async fn chat_and_write(
+    window_n: u64,
+    user_content: String,
+    history: &History,
+    model: &str,
+    ctx: &PipeContext<'_>,
+    tag: &str,
+    started: Instant,
+) -> Result<String, PipeError> {
+    let out_path = ctx.out_path(&format!("{tag}.md"));
+    let user_turn = Turn::user(user_content);
+
     let request_turns = {
-        let guard = history.lock().expect("pipe1 history lock poisoned");
+        let guard = history.lock().expect("pipe history lock poisoned");
         let mut turns = guard.clone();
         turns.push(user_turn.clone());
         turns
@@ -72,35 +132,42 @@ pub async fn run_pipe1(
     match ctx.backend.chat(model, ctx.system_prompt, &request_turns).await {
         Ok(reply) => {
             {
-                let mut guard = history.lock().expect("pipe1 history lock poisoned");
+                let mut guard = history.lock().expect("pipe history lock poisoned");
                 guard.push(user_turn);
                 guard.push(Turn::assistant(reply.clone()));
             }
-            if let Err(e) = write_block(&out_path, window.n, started.elapsed(), &reply, ctx.mode) {
-                warn!(window = window.n, error = %e, "pipe1 failed to write output file");
+            if let Err(e) = write_block(&out_path, window_n, started.elapsed(), &reply, ctx.mode) {
+                warn!(window = window_n, %tag, error = %e, "pipe failed to write output file");
             }
             Ok(reply)
         }
         Err(e) => {
-            let body = format!("**pipe1 error:** {e}");
-            if let Err(io) = write_block(&out_path, window.n, started.elapsed(), &body, ctx.mode) {
-                warn!(window = window.n, error = %io, "pipe1 failed to write error block");
+            let body = format!("**{tag} error:** {e}");
+            if let Err(io) = write_block(&out_path, window_n, started.elapsed(), &body, ctx.mode) {
+                warn!(window = window_n, %tag, error = %io, "pipe failed to write error block");
             }
-            warn!(window = window.n, error = %e, "pipe1 LLM call failed");
-            Err(e)
+            warn!(window = window_n, %tag, error = %e, "pipe LLM call failed");
+            Err(PipeError::Llm(e))
         }
     }
 }
 
+/// Transcribe one side's raw samples; empty audio yields empty text (not an
+/// error), so a single-source window still works.
+async fn transcribe_side(transcriber: &ApiTranscriber, samples: &[f32]) -> Result<String, ApiError> {
+    if samples.is_empty() {
+        return Ok(String::new());
+    }
+    transcriber.transcribe(samples).await
+}
+
 /// Build the labeled transcript the LLM sees, system side first. Blank sides are
 /// skipped; an empty window yields an explicit "no speech" note.
-pub fn transcript_content(window: &Window, labels: &Labels) -> String {
+fn label_transcript(mic: &str, sys: &str, labels: &Labels) -> String {
     let mut lines = Vec::new();
-    let sys = window.sys_text.trim();
     if !sys.is_empty() {
         lines.push(format!("{}: {sys}", labels.system));
     }
-    let mic = window.mic_text.trim();
     if !mic.is_empty() {
         lines.push(format!("{}: {mic}", labels.mic));
     }
@@ -122,31 +189,21 @@ mod tests {
         }
     }
 
-    fn window(mic: &str, sys: &str) -> Window {
-        Window {
-            n: 1,
-            mic_raw: Vec::new(),
-            sys_raw: Vec::new(),
-            mic_text: mic.to_owned(),
-            sys_text: sys.to_owned(),
-        }
-    }
-
     #[test]
     fn transcript_puts_system_first_then_mic() {
-        let c = transcript_content(&window("I'm well", "How are you?"), &labels());
+        let c = label_transcript("I'm well", "How are you?", &labels());
         assert_eq!(c, "Them: How are you?\nMe: I'm well");
     }
 
     #[test]
     fn transcript_skips_blank_sides() {
-        let c = transcript_content(&window("", "  Hello  "), &labels());
+        let c = label_transcript("", "Hello", &labels());
         assert_eq!(c, "Them: Hello");
     }
 
     #[test]
     fn empty_window_yields_no_speech_note() {
-        let c = transcript_content(&window("", ""), &labels());
+        let c = label_transcript("", "", &labels());
         assert_eq!(c, "(no speech detected in this window)");
     }
 }
