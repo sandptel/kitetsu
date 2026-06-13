@@ -14,7 +14,10 @@ use tracing::warn;
 use crate::listener::ListenerError;
 
 pub(crate) mod moonshine;
+pub(crate) mod transcribe;
 pub(crate) mod whisper;
+
+pub use transcribe::LocalTranscriber;
 
 // ── Public selector ────────────────────────────────────────────────────────────
 

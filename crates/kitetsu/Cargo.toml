@@ -17,6 +17,9 @@ onnx = ["dep:transcribe-rs", "transcribe-rs/onnx"]
 ort-rocm = ["onnx", "transcribe-rs/ort-rocm"]
 whisper = ["dep:whisper-rs"]
 whisperfile = ["dep:transcribe-rs", "transcribe-rs/whisperfile"]
+# OpenAI REST transcription backend (Decision #25). Off by default — pulls in
+# reqwest; the local Moonshine/Whisper paths need no network stack.
+api = ["dep:reqwest", "dep:serde", "dep:serde_json"]
 
 [dependencies]
 # PulseAudio / PipeWire-pulse audio capture — §5.1 table.
@@ -38,6 +41,17 @@ tracing = "0.1"
 # Library-level errors — §5.1 table / §5 code style.
 thiserror = "2"
 
+# OpenAI REST transcription backend (`api` feature). reqwest is the §5.1 LLM-HTTP
+# choice; rustls-tls avoids an OpenSSL system dep (Nix-friendly). serde/serde_json
+# parse the `{ "text": ... }` response. §5.1 table — no separate dependency ask.
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+    "json",
+    "multipart",
+], optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+
 [[example]]
 name = "moonshine_transcribe"
 required-features = ["onnx"]
@@ -53,6 +67,10 @@ required-features = ["onnx"]
 [[example]]
 name = "transcribe_audio"
 required-features = ["whisper"]
+
+[[example]]
+name = "api_transcribe"
+required-features = ["api"]
 
 [dev-dependencies]
 # Used only at binary edges (examples) where anyhow is allowed.

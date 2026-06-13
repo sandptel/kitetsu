@@ -25,7 +25,7 @@ use std::time::Instant;
 
 use anyhow::Context as _;
 
-use kitetsu::listener::{AudioModel, Devices, Recorder, Transcriber, discover_default_devices};
+use kitetsu::listener::{AudioModel, Devices, LocalTranscriber, Recorder, discover_default_devices};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -48,14 +48,14 @@ async fn main() -> anyhow::Result<()> {
 
     // ── Load two Moonshine instances (one per stream, true concurrency) ─────────
     //
-    // Each Transcriber owns its own ONNX session. Two instances are loaded here
+    // Each LocalTranscriber owns its own ONNX session. Two instances are loaded here
     // rather than sharing one behind a Mutex so that mic and system inference run
     // on separate blocking threads in parallel with no serialisation overhead.
     println!("Loading Moonshine models (×2)...");
     let load_start = Instant::now();
     let mut mic_t =
-        Transcriber::load(AudioModel::Default).context("failed to load Moonshine model (mic)")?;
-    let mut sys_t = Transcriber::load(AudioModel::Default)
+        LocalTranscriber::load(AudioModel::Default).context("failed to load Moonshine model (mic)")?;
+    let mut sys_t = LocalTranscriber::load(AudioModel::Default)
         .context("failed to load Moonshine model (system)")?;
     println!(
         "Models ready in {:.1}s.\n",

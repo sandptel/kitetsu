@@ -1,4 +1,4 @@
-//! Rolling-window live transcription on top of a load-once [`Transcriber`].
+//! Rolling-window live transcription on top of a load-once [`LocalTranscriber`].
 //!
 //! Moonshine v2's stateful chunk decoding is private in transcribe-rs, so live
 //! transcription here is a rolling window: audio is fed in as it is captured,
@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use crate::listener::ListenerError;
 
-use super::Transcriber;
+use super::models::LocalTranscriber;
 
 /// 16 kHz mono — the rate every capture path in `listener` produces.
 const SAMPLE_RATE: usize = 16_000;
@@ -117,7 +117,7 @@ impl Window {
 
 // ── LiveTranscriber ──────────────────────────────────────────────────────────────
 
-/// Drives a [`Transcriber`] over a sliding audio window for live partials.
+/// Drives a [`LocalTranscriber`] over a sliding audio window for live partials.
 ///
 /// Feed captured samples with [`feed`][Self::feed]; when
 /// [`should_run`][Self::should_run] returns `true`, call
@@ -125,13 +125,13 @@ impl Window {
 /// is `Send`; inference blocks, so drive it from a dedicated thread (e.g.
 /// `tokio::task::spawn_blocking`).
 pub struct LiveTranscriber {
-    transcriber: Transcriber,
+    transcriber: LocalTranscriber,
     window: Window,
 }
 
 impl LiveTranscriber {
-    /// Wrap an already-loaded [`Transcriber`] with rolling-window scheduling.
-    pub fn new(transcriber: Transcriber, config: LiveConfig) -> Self {
+    /// Wrap an already-loaded [`LocalTranscriber`] with rolling-window scheduling.
+    pub fn new(transcriber: LocalTranscriber, config: LiveConfig) -> Self {
         Self {
             transcriber,
             window: Window::new(config),

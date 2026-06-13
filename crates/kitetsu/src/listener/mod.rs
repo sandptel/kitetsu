@@ -22,8 +22,11 @@ pub use capture::{
     CaptureConfig, Devices, Recorder, RecordingHandle, capture_to_wav, discover_default_devices,
 };
 pub use error::ListenerError;
+#[cfg(feature = "api")]
+pub use transcriber::{ApiConfig, ApiError, ApiTranscriber};
 pub use transcriber::{
-    AudioModel, LiveConfig, LiveTranscriber, MoonshineVariant, Quantization, Transcriber,
+    AudioModel, LiveConfig, LiveTranscriber, LocalTranscriber, MoonshineVariant, Quantization,
+    TranscribeError, TranscribeMethod, Transcriber,
 };
 
 // ── Sink selection types ──────────────────────────────────────────────────────
@@ -58,21 +61,18 @@ pub enum OutputSink {
 /// Capture audio from `sink` for [`DEFAULT_CAPTURE_SECS`][capture::DEFAULT_CAPTURE_SECS]
 /// seconds and transcribe it using `model`.
 ///
-/// If `model` is unavailable (backend feature off or model file missing), falls
-/// back to `AudioModel::Default` with a warning log. The full capture + inference
-/// pipeline runs inside a blocking task so it never touches the async executor.
+/// The full capture + inference pipeline runs inside `spawn_blocking` so it
+/// never touches the async executor.
 pub async fn transcribe(sink: AudioSink, model: AudioModel) -> Result<String, ListenerError> {
     tokio::task::spawn_blocking(move || {
         let device = resolve_device(&sink)?;
         let label = sink_label(&sink);
-        let model = model.resolve();
         let samples = capture::capture_samples(
             &device,
             label,
             Duration::from_secs(capture::DEFAULT_CAPTURE_SECS),
         )?;
-        let mut loaded = model.load()?;
-        loaded.transcribe(&samples, None)
+        LocalTranscriber::load(model)?.transcribe(&samples, None)
     })
     .await
     .map_err(ListenerError::join)?
