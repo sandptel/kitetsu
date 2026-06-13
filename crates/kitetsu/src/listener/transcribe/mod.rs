@@ -11,7 +11,10 @@ mod live;
 pub(crate) mod models;
 
 #[cfg(feature = "api")]
-pub use api::{ApiConfig, ApiError, ApiTranscriber};
+pub use api::{
+    ApiConfig, ApiError, ApiTranscriber, KeyError, ANTHROPIC_API_KEY, OPENAI_API_KEY, load_dotenv,
+    require,
+};
 pub use live::{LiveConfig, LiveTranscriber};
 pub use models::{AudioModel, LocalTranscriber, MoonshineVariant, Quantization};
 

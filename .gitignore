@@ -4,3 +4,5 @@ KITETSU_PLAN.md
 # Capture-example recordings — never committed (§10 CLAUDE.md)
 mic.wav
 system.wav
+# API keys — never committed (§10 CLAUDE.md)
+.env

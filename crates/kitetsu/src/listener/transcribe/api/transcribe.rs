@@ -5,8 +5,6 @@
 //! callers can choose either backend from a single import path.
 //! Not here: WAV encoding details (`openai`), capture, session state.
 
-pub use super::super::models::LocalTranscriber;
-
 use super::openai::{ApiConfig, ApiError, wav_bytes};
 
 /// The `response_format=json` response shape.
