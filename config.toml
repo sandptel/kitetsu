@@ -1,0 +1,48 @@
+# kitetsu teleprompter configuration.
+#
+# API keys are NOT here — set OPENAI_API_KEY (and ANTHROPIC_API_KEY if any pipe
+# uses the anthropic backend) in `.env` or the shell environment.
+#
+# Copy prompt.md.example -> prompt.md and context.md.example -> context.md and
+# edit them; `context.md` is gitignored (personal). Run the daemon from the repo
+# root so the relative paths below resolve.
+
+[output]
+dir  = "out"      # pipe1.md / pipe2.md / pipe3.md are written here
+mode = "append"   # "append" keeps history; "overwrite" keeps only the latest
+
+[prompts]
+prompt  = "prompt.md"    # instructions: how the LLM should respond
+context = "context.md"   # background: what the LLM should know about you
+
+[audio]
+mic             = true
+system          = true
+mic_label       = "Me"     # how your speech is labelled to the LLM
+system_label    = "Them"   # how the other party's speech is labelled
+max_window_secs = 300      # safety cap: drop oldest audio past this if you never trigger
+# mic_source    = "..."    # optional explicit PulseAudio source; omit to auto-discover
+# system_source = "..."
+
+# Pipe 1 — live (Realtime WS) transcription -> LLM. Fastest; lands first.
+[pipe1]
+enabled             = true
+stt_model           = "gpt-realtime-whisper"
+stt_language        = "en"
+commit_every_chunks = 8
+llm_backend         = "openai"   # openai | anthropic
+llm_model           = "gpt-4o"
+
+# Pipe 2 — on-trigger REST chunk transcription -> LLM. Slower, more accurate.
+[pipe2]
+enabled      = true
+stt_model    = "gpt-4o-transcribe"
+stt_language = "en"
+llm_backend  = "openai"
+llm_model    = "gpt-4o"
+
+# Pipe 3 — raw audio sent directly to an audio-capable LLM (OpenAI only).
+[pipe3]
+enabled     = true
+llm_backend = "openai"
+llm_model   = "gpt-4o-audio-preview"

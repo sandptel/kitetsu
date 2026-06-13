@@ -10,7 +10,9 @@
 //! this is throwaway, branch-local experimentation (see the plan). It reuses the
 //! `listener` audio stack but adds no obligations to the main build.
 
+pub mod config;
 pub mod daemon;
 pub mod ipc;
 
+pub use config::{Config, ConfigError};
 pub use ipc::{Command, IpcError, send_command, socket_path};

@@ -5,10 +5,12 @@
 //! running daemon over the control socket. All real logic lives in
 //! `kitetsu::teleprompter` (the lib) so it stays unit-testable.
 
+use std::path::PathBuf;
+
 use anyhow::Context as _;
 use clap::{Parser, Subcommand};
 
-use kitetsu::teleprompter::{Command, daemon, send_command};
+use kitetsu::teleprompter::{Command, Config, daemon, send_command};
 
 /// Live teleprompter: listen to mic + system audio and suggest what to say.
 #[derive(Parser)]
@@ -17,6 +19,10 @@ struct Cli {
     /// Run the long-lived daemon (audio capture + pipes + control socket).
     #[arg(long)]
     daemon: bool,
+
+    /// Path to the TOML config (daemon only).
+    #[arg(long, default_value = "config.toml")]
+    config: PathBuf,
 
     #[command(subcommand)]
     command: Option<ClientCommand>,
@@ -45,7 +51,15 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     if cli.daemon {
-        daemon::run().await.context("teleprompter daemon failed")?;
+        let config = Config::load(&cli.config)
+            .with_context(|| format!("loading config from {}", cli.config.display()))?;
+        let base_dir = cli.config.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let system_prompt = config
+            .load_system_prompt(base_dir)
+            .context("loading prompt.md / context.md")?;
+        daemon::run(config, system_prompt)
+            .await
+            .context("teleprompter daemon failed")?;
         return Ok(());
     }
 

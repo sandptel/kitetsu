@@ -7,6 +7,7 @@
 
 use tracing::{info, warn};
 
+use super::config::Config;
 use super::ipc::{self, Command, IpcError};
 
 /// Failures that terminate the daemon.
@@ -19,10 +20,16 @@ pub enum DaemonError {
 
 /// Bind the control socket and serve commands until `Stop` is received.
 ///
+/// `config` and `system_prompt` are loaded once by the caller and held for the
+/// daemon's lifetime; iteration 2 only logs a summary of them — capture and the
+/// pipes consume them in later iterations.
+///
 /// Commands are handled one connection at a time — the control plane is
 /// low-traffic (human key presses), so sequential handling keeps ordering
 /// obvious and needs no shared locking.
-pub async fn run() -> Result<(), DaemonError> {
+pub async fn run(config: Config, system_prompt: String) -> Result<(), DaemonError> {
+    log_summary(&config, &system_prompt);
+
     let listener = ipc::bind()?;
     info!(socket = %ipc::socket_path().display(), "teleprompter daemon listening");
 
@@ -59,4 +66,41 @@ pub async fn run() -> Result<(), DaemonError> {
 
     ipc::cleanup();
     Ok(())
+}
+
+/// Log the resolved pipes, models, and prompt size at startup so the operator
+/// can confirm what the daemon will do before speaking a word.
+fn log_summary(config: &Config, system_prompt: &str) {
+    info!(
+        mic = config.audio.mic,
+        system = config.audio.system,
+        max_window_secs = config.audio.max_window_secs,
+        out_dir = %config.output.dir.display(),
+        out_mode = ?config.output.mode,
+        system_prompt_chars = system_prompt.len(),
+        "config loaded",
+    );
+    if config.pipe1.enabled {
+        info!(
+            stt = %config.pipe1.stt_model,
+            llm_backend = ?config.pipe1.llm_backend,
+            llm = %config.pipe1.llm_model,
+            "pipe1 (live) enabled",
+        );
+    }
+    if config.pipe2.enabled {
+        info!(
+            stt = %config.pipe2.stt_model,
+            llm_backend = ?config.pipe2.llm_backend,
+            llm = %config.pipe2.llm_model,
+            "pipe2 (chunk) enabled",
+        );
+    }
+    if config.pipe3.enabled {
+        info!(
+            llm_backend = ?config.pipe3.llm_backend,
+            llm = %config.pipe3.llm_model,
+            "pipe3 (audio) enabled",
+        );
+    }
 }
