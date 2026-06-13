@@ -126,6 +126,10 @@ required-features = ["api"]
 name = "live_api_transcribe"
 required-features = ["api"]
 
+[[example]]
+name = "teleprompter_llm"
+required-features = ["teleprompter"]
+
 [dev-dependencies]
 # Used only at binary edges (examples) where anyhow is allowed.
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

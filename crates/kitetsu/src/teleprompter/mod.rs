@@ -4,8 +4,8 @@
 //! `ipc` owns the Unix-socket control plane (command framing + client/server).
 //! `daemon` owns the long-lived process: capture wiring, window state, and
 //! trigger handling. `config` parses the TOML; `window` holds the rolling
-//! per-source capture buffers. Later iterations add `llm`, `pipes`, and
-//! `output`.
+//! per-source capture buffers; `llm` is the chat-LLM client. Later iterations
+//! add `pipes` and `output`.
 //!
 //! Deliberately separate from the planned `presenter`/`router`/… architecture —
 //! this is throwaway, branch-local experimentation (see the plan). It reuses the
@@ -14,8 +14,10 @@
 pub mod config;
 pub mod daemon;
 pub mod ipc;
+pub mod llm;
 pub mod window;
 
 pub use config::{Config, ConfigError};
 pub use ipc::{Command, IpcError, send_command, socket_path};
+pub use llm::{AudioPart, Backend, LlmError, Role, Turn};
 pub use window::{Source, Window, WindowManager};
