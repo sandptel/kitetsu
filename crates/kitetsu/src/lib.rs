@@ -7,3 +7,10 @@
 //! `KITETSU_PLAN.md` for the full architecture and module dependency rules.
 
 pub mod listener;
+
+// Experimental live-teleprompter binary support: CLI/daemon control plane, TOML
+// config, LLM client, and pipe orchestration. Lives in the lib (not the bin) so
+// it is unit-testable; `src/main.rs` is a thin entry point over it. Gated to the
+// `teleprompter` feature so the default library build is unaffected.
+#[cfg(feature = "teleprompter")]
+pub mod teleprompter;

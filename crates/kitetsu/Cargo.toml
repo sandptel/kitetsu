@@ -27,6 +27,16 @@ api = [
     "dep:futures-util",
     "dep:base64",
 ]
+# Experimental live teleprompter binary (separate-branch work). Builds on the
+# `api` stack (capture + REST/Realtime STT + LLM HTTP) and adds the CLI/daemon
+# control plane, TOML config, and binary-edge deps (clap/anyhow/tracing-subscriber).
+teleprompter = [
+    "api",
+    "dep:clap",
+    "dep:toml",
+    "dep:anyhow",
+    "dep:tracing-subscriber",
+]
 
 [dependencies]
 # PulseAudio / PipeWire-pulse audio capture — §5.1 table.
@@ -74,6 +84,23 @@ futures-util = { version = "0.3", default-features = false, features = [
     "std",
 ], optional = true }
 base64 = { version = "0.22", optional = true }
+
+# ── teleprompter binary deps (`teleprompter` feature) ─────────────────────────
+# clap: CLI parsing for the bin (--daemon / next / stop). toml: parse config.toml.
+# anyhow + tracing-subscriber are binary-edge only (CLAUDE.md §5) — optional so
+# the library default build pulls neither.
+clap = { version = "4", features = ["derive"], optional = true }
+toml = { version = "0.8", optional = true }
+anyhow = { version = "1", optional = true }
+tracing-subscriber = { version = "0.3", features = [
+    "env-filter",
+], optional = true }
+
+# ── Binary: experimental live teleprompter ────────────────────────────────────
+[[bin]]
+name = "kitetsu"
+path = "src/main.rs"
+required-features = ["teleprompter"]
 
 [[example]]
 name = "moonshine_transcribe"
