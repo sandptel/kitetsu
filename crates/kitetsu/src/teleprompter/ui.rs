@@ -11,6 +11,7 @@
 //! driven appearance (iteration 4). This iteration stands up the surface, the two
 //! placeholder cards, and the channel bridge.
 
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -30,6 +31,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use kitetsu_primitives::card::{self, Card, Edge};
 
 use super::ipc::{Command, send_command};
+use super::layout::{self, Geometry, Layout};
 
 /// Which pipe a card represents. Plain data — carried across the channel and used
 /// to route a reply to the right card.
@@ -120,6 +122,10 @@ fn capped_height(surface: Size, pos_y: f32) -> f32 {
 /// the receiver: `init` cannot capture).
 static CARD_INIT: Mutex<Option<Vec<CardInit>>> = Mutex::new(None);
 
+/// Process-wide parking spot for the layout file path (same `fn`-pointer
+/// constraint: `init` cannot capture it).
+static LAYOUT_PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
+
 /// One card plus where it sits in the surface and what mode it's showing.
 struct Slot {
     id: PipeId,
@@ -209,6 +215,26 @@ struct App {
     surface: Size,
     /// Whether the cards are shown. Hidden ⇒ empty input region (click-through).
     visible: bool,
+    /// Where to persist card geometry; saved after each drag/resize.
+    layout_path: PathBuf,
+}
+
+/// Snapshot the cards' current geometry for persistence.
+fn current_layout(app: &App) -> Layout {
+    let mut layout = Layout::default();
+    for slot in &app.slots {
+        layout.set(
+            slot.id,
+            Geometry {
+                pos_x: slot.pos.x,
+                pos_y: slot.pos.y,
+                width: slot.card.width,
+                // manual_height is always Some here (seeded on init, updated on resize).
+                height: slot.card.manual_height.unwrap_or(MIN_CARD_HEIGHT),
+            },
+        );
+    }
+    layout
 }
 
 #[to_layer_message]
@@ -274,6 +300,11 @@ fn init() -> (App, Task<Message>) {
         .into_iter()
         .map(Slot::from_init)
         .collect();
+    let layout_path = LAYOUT_PATH
+        .lock()
+        .expect("layout path lock poisoned")
+        .take()
+        .unwrap_or_else(layout::layout_path);
     (
         App {
             slots,
@@ -281,6 +312,7 @@ fn init() -> (App, Task<Message>) {
             grab: None,
             surface: Size::new(f32::INFINITY, f32::INFINITY),
             visible: true,
+            layout_path,
         },
         Task::none(),
     )
@@ -359,7 +391,18 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 }
             }
         }
-        Message::Released => app.grab = None,
+        Message::Released => {
+            // A grab just ended (move or resize) ⇒ persist the new geometry. File
+            // I/O runs in a Task, never inline in update().
+            if app.grab.take().is_some() {
+                let layout = current_layout(app);
+                let path = app.layout_path.clone();
+                return Task::perform(
+                    async move { layout::save(&path, &layout) },
+                    |_| Message::CmdDone,
+                );
+            }
+        }
         Message::SurfaceResized(size) => {
             app.surface = size;
             for slot in &mut app.slots {
@@ -498,8 +541,9 @@ fn ui_event_stream() -> impl Stream<Item = Message> {
 /// Run the overlay on the current (main) thread. Blocks until the surface closes.
 ///
 /// `cards` are the per-pipe specs (built from config); they are parked for `init`.
-pub fn run(cards: Vec<CardInit>) -> iced_layershell::Result {
+pub fn run(cards: Vec<CardInit>, layout_path: PathBuf) -> iced_layershell::Result {
     *CARD_INIT.lock().expect("card init lock poisoned") = Some(cards);
+    *LAYOUT_PATH.lock().expect("layout path lock poisoned") = Some(layout_path);
     application(init, namespace, update, view)
         .subscription(subscription)
         // Register JetBrains Mono (regular + bold) and make it the default so

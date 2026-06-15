@@ -12,7 +12,7 @@ use anyhow::Context as _;
 use clap::{Parser, Subcommand};
 use tokio::sync::mpsc;
 
-use kitetsu::teleprompter::{CardInit, Command, Config, PipeId, daemon, send_command, ui};
+use kitetsu::teleprompter::{CardInit, Command, Config, PipeId, daemon, layout, send_command, ui};
 
 /// Live teleprompter: listen to mic + system audio and suggest what to say.
 #[derive(Parser)]
@@ -93,8 +93,20 @@ fn run_daemon(config_path: &std::path::Path) -> anyhow::Result<()> {
         .load_system_prompt(base_dir)
         .context("loading prompt.md / context.md")?;
 
-    // Build the overlay card specs from config (only enabled pipes get a card).
-    let cards = card_specs(&config);
+    // Build the overlay card specs from config (only enabled pipes get a card),
+    // then let any saved layout override the geometry so cards reopen where the
+    // user last left them.
+    let mut cards = card_specs(&config);
+    let layout_path = layout::layout_path();
+    let saved = layout::load(&layout_path);
+    for card in &mut cards {
+        if let Some(g) = saved.get(card.id) {
+            card.pos_x = g.pos_x;
+            card.pos_y = g.pos_y;
+            card.width = g.width;
+            card.height = g.height;
+        }
+    }
 
     // Bridge: daemon (tokio) → overlay (iced). Park the receiver for the
     // subscription worker before the iced loop starts.
@@ -117,7 +129,7 @@ fn run_daemon(config_path: &std::path::Path) -> anyhow::Result<()> {
         .context("spawning daemon thread")?;
 
     // Run the overlay on the main thread; blocks until the surface closes.
-    ui::run(cards).map_err(|e| anyhow::anyhow!("overlay failed: {e}"))?;
+    ui::run(cards, layout_path).map_err(|e| anyhow::anyhow!("overlay failed: {e}"))?;
 
     // Overlay closed → the daemon thread winds down with the process.
     drop(daemon_thread);

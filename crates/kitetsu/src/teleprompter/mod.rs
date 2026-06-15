@@ -14,6 +14,7 @@
 pub mod config;
 pub mod daemon;
 pub mod ipc;
+pub mod layout;
 pub mod llm;
 pub mod output;
 pub mod pipes;
@@ -22,6 +23,7 @@ pub mod window;
 
 pub use config::{Config, ConfigError};
 pub use ipc::{Command, IpcError, send_command, socket_path};
+pub use layout::{Geometry, Layout};
 pub use llm::{AudioPart, Backend, LlmError, Role, Turn};
 pub use pipes::{History, Labels, PipeContext, PipeError, PipeOutcome, run_pipe1, run_pipe2};
 pub use ui::{CardInit, PipeId, Stage, UiEvent};
