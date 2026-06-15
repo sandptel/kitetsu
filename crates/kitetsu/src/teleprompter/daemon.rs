@@ -264,9 +264,9 @@ pub async fn run(config: Config, system_prompt: String) -> Result<(), DaemonErro
                             mode: rt.mode,
                         };
                         match run_pipe1(&window, &rt.history, &rt.model, &ctx).await {
-                            Ok(reply) => info!(
+                            Ok(outcome) => info!(
                                 window = window.n,
-                                chars = reply.len(),
+                                chars = outcome.reply.len(),
                                 "pipe1 suggestion written",
                             ),
                             Err(e) => warn!(window = window.n, error = %e, "pipe1 failed"),
@@ -287,9 +287,9 @@ pub async fn run(config: Config, system_prompt: String) -> Result<(), DaemonErro
                         };
                         match run_pipe2(&window, &rt.history, &rt.transcriber, &rt.model, &ctx).await
                         {
-                            Ok(reply) => info!(
+                            Ok(outcome) => info!(
                                 window = window.n,
-                                chars = reply.len(),
+                                chars = outcome.reply.len(),
                                 "pipe2 suggestion written",
                             ),
                             Err(e) => warn!(window = window.n, error = %e, "pipe2 failed"),

@@ -1,23 +1,23 @@
-//! Pipe 1 (live) end-to-end, interactive — the daemon's pipe1 path driven by the
+//! Pipe 2 (chunk) end-to-end, interactive — the daemon's pipe2 path driven by the
 //! keyboard instead of the control socket.
 //!
-//! Continuously captures mic + system audio and live-transcribes both over the
-//! Realtime WS while you talk; a recording-seconds counter ticks the whole time.
-//! Each time you press Enter, the current window (everything heard since the last
-//! press) is snapshotted: the accumulated live transcript — mic and system shown
-//! separately — is printed as exactly what gets sent to the LLM, then the LLM's
-//! suggestion is printed and appended to `out/pipe1.md`. The window then resets;
-//! recording never stops. Ctrl-D quits.
+//! Continuously captures mic + system audio into a raw rolling buffer (no live
+//! WS — pipe2 transcribes on trigger); a recording-seconds counter ticks the
+//! whole time. Each time you press Enter, the current window is snapshotted and
+//! REST-transcribed with the configured STT model (mic and system in parallel);
+//! the resulting transcript — each side shown separately — is printed as exactly
+//! what gets sent to the LLM, then the LLM's suggestion is printed and appended
+//! to `out/pipe2.md`. The window then resets; recording never stops. Ctrl-D quits.
 //!
-//! This mirrors `daemon::run`'s pipe1 wiring 1:1 (same `spawn_source`, same
-//! `run_pipe1`), so what you see here is what the daemon does on `kitetsu next`.
+//! This mirrors `daemon::run`'s pipe2 wiring 1:1 (raw capture, then `run_pipe2`),
+//! so what you see here is what the daemon does on `kitetsu next`.
 //!
 //! Usage:
-//!   cargo run -p kitetsu --features teleprompter --example teleprompter_pipe1
+//!   cargo run -p kitetsu --features teleprompter --example teleprompter_pipe2
 //!
 //! Requires `config.toml` with `prompt.md` + `context.md` beside it, and
-//! `OPENAI_API_KEY` (Realtime WS + LLM when openai). If pipe1's `llm_backend`
-//! is anthropic, `ANTHROPIC_API_KEY` too.
+//! `OPENAI_API_KEY` (REST transcription + LLM when openai). If pipe2's
+//! `llm_backend` is anthropic, `ANTHROPIC_API_KEY` too.
 
 use std::io::Write as _;
 use std::path::Path;
@@ -27,15 +27,13 @@ use std::time::{Duration, Instant};
 use anyhow::Context as _;
 
 use kitetsu::listener::{
-    ANTHROPIC_API_KEY, OPENAI_API_KEY, RealtimeError, RealtimeSession, Recorder, RecordingHandle,
-    TranscriptEvent, discover_default_devices, load_dotenv, require,
+    ANTHROPIC_API_KEY, ApiConfig, ApiTranscriber, OPENAI_API_KEY, Recorder, RecordingHandle,
+    discover_default_devices, load_dotenv, require,
 };
 use kitetsu::teleprompter::config::LlmBackendKind;
 use kitetsu::teleprompter::{
-    Backend, Config, History, Labels, PipeContext, Source, WindowManager, run_pipe1,
+    Backend, Config, History, Labels, PipeContext, Source, WindowManager, run_pipe2,
 };
-
-const REALTIME_ENDPOINT: &str = "wss://api.openai.com/v1/realtime?intent=transcription";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -55,33 +53,42 @@ async fn main() -> anyhow::Result<()> {
         .load_system_prompt(base_dir)
         .context("loading prompt.md / context.md (copy the .example files)")?;
 
-    if !config.pipe1.enabled {
-        anyhow::bail!("pipe1 is disabled in config.toml — enable [pipe1] to run this example");
+    if !config.pipe2.enabled {
+        anyhow::bail!("pipe2 is disabled in config.toml — enable [pipe2] to run this example");
     }
 
-    // ── Keys + backend (same selection the daemon makes) ──────────────────────
+    // ── Keys + backend + REST transcriber (same the daemon builds) ────────────
     if let Ok(cwd) = std::env::current_dir() {
         load_dotenv(&cwd.join(".env"));
     }
     let openai_key =
-        require(OPENAI_API_KEY).context("OPENAI_API_KEY is needed for the Realtime WS")?;
-    let backend = match config.pipe1.llm_backend {
+        require(OPENAI_API_KEY).context("OPENAI_API_KEY is needed for REST transcription")?;
+    let backend = match config.pipe2.llm_backend {
         LlmBackendKind::Openai => Backend::new(LlmBackendKind::Openai, openai_key.clone()),
         LlmBackendKind::Anthropic => Backend::new(
             LlmBackendKind::Anthropic,
-            require(ANTHROPIC_API_KEY).context("pipe1.llm_backend = anthropic needs the key")?,
+            require(ANTHROPIC_API_KEY).context("pipe2.llm_backend = anthropic needs the key")?,
         ),
     }
-    .context("building pipe1 LLM backend")?;
-    let model = config.pipe1.llm_model.clone();
+    .context("building pipe2 LLM backend")?;
+    let model = config.pipe2.llm_model.clone();
     let history: History = Arc::new(Mutex::new(Vec::new()));
+    let transcriber = ApiTranscriber::new(
+        openai_key,
+        ApiConfig {
+            model: config.pipe2.stt_model.clone(),
+            language: config.pipe2.stt_language.clone(),
+            ..ApiConfig::default()
+        },
+    )
+    .context("building pipe2 REST transcriber")?;
 
     let labels = Labels {
         mic: config.audio.mic_label.clone(),
         system: config.audio.system_label.clone(),
     };
 
-    // ── Capture + live WS per source → shared window ──────────────────────────
+    // ── Raw capture per source → shared window (no WS for pipe2) ───────────────
     let windows = Arc::new(Mutex::new(WindowManager::new(config.audio.max_window_secs)));
     let devices = discover_default_devices().context("PulseAudio device discovery failed")?;
 
@@ -94,7 +101,7 @@ async fn main() -> anyhow::Result<()> {
             .mic_source
             .clone()
             .unwrap_or(devices.mic_source.clone());
-        handles.push(spawn_source(Source::Mic, mic_dev.clone(), "telep-mic", &windows, &openai_key, &config).await?);
+        handles.push(spawn_source(Source::Mic, mic_dev.clone(), "telep-mic", &windows));
     }
     if config.audio.system {
         sys_dev = config
@@ -102,15 +109,15 @@ async fn main() -> anyhow::Result<()> {
             .system_source
             .clone()
             .unwrap_or(devices.system_monitor.clone());
-        handles.push(spawn_source(Source::Sys, sys_dev.clone(), "telep-sys", &windows, &openai_key, &config).await?);
+        handles.push(spawn_source(Source::Sys, sys_dev.clone(), "telep-sys", &windows));
     }
 
     print_banner(&config, &system_prompt, &mic_dev, &sys_dev);
 
-    let out_path = config.output.dir.join("pipe1.md");
+    let out_path = config.output.dir.join("pipe2.md");
 
-    // ── Event loop: counter ticks; Enter → show transcript → wait for the
-    // response (recording keeps running) → show response → resume counter. ─────
+    // ── Event loop: counter ticks; Enter → wait (transcribe + LLM) while the
+    // recording keeps running → show transcript + response → resume counter. ───
     loop {
         let start = Instant::now();
         if !wait_for_enter(start).await? {
@@ -123,10 +130,6 @@ async fn main() -> anyhow::Result<()> {
             .snapshot_and_reset();
         let recorded = start.elapsed().as_secs();
 
-        // pipe1's transcript is the accumulated live text — known immediately, so
-        // show what is being sent the moment Enter is pressed.
-        print_transcript(window.n, recorded, &labels, window.mic_text.trim(), window.sys_text.trim());
-
         let ctx = PipeContext {
             backend: &backend,
             system_prompt: &system_prompt,
@@ -135,13 +138,18 @@ async fn main() -> anyhow::Result<()> {
             mode: config.output.mode,
         };
 
-        // Await the LLM while the capture tasks keep recording in the background;
-        // the spinner shows the wait without resuming the recording counter.
+        // pipe2 transcribes on trigger, so the transcript is only known once the
+        // pipe finishes; the spinner covers the REST + LLM wait while recording
+        // continues in the background.
         let call = Instant::now();
-        let res = await_with_spinner("waiting for response", &model, run_pipe1(&window, &history, &model, &ctx)).await;
+        let res = await_with_spinner("transcribing + querying", &model,
+            run_pipe2(&window, &history, &transcriber, &model, &ctx)).await;
         match res {
-            Ok(outcome) => print_response("pipe1 live", &model, call.elapsed(), &outcome.reply, &out_path),
-            Err(e) => eprintln!("  pipe1 error: {e}\n"),
+            Ok(outcome) => {
+                print_transcript(window.n, recorded, &labels, &outcome.mic_text, &outcome.sys_text);
+                print_response("pipe2 chunk", &model, call.elapsed(), &outcome.reply, &out_path);
+            }
+            Err(e) => eprintln!("  pipe2 error: {e}\n"),
         }
     }
 
@@ -154,7 +162,7 @@ async fn main() -> anyhow::Result<()> {
 
 /// Print the model/config summary so you can confirm what will run before talking.
 fn print_banner(config: &Config, system_prompt: &str, mic_dev: &str, sys_dev: &str) {
-    println!("\n┌─ teleprompter · pipe1 (live WS transcript → LLM) ───────────");
+    println!("\n┌─ teleprompter · pipe2 (on-trigger REST transcribe → LLM) ───");
     println!("│ config   {}", "config.toml");
     println!(
         "│ prompt   {} chars (prompt.md + context.md)",
@@ -166,15 +174,15 @@ fn print_banner(config: &Config, system_prompt: &str, mic_dev: &str, sys_dev: &s
     );
     println!(
         "│ stt      {} (lang {})",
-        config.pipe1.stt_model,
-        config.pipe1.stt_language.as_deref().unwrap_or("auto")
+        config.pipe2.stt_model,
+        config.pipe2.stt_language.as_deref().unwrap_or("auto")
     );
     println!(
         "│ llm      {:?} / {}",
-        config.pipe1.llm_backend, config.pipe1.llm_model
+        config.pipe2.llm_backend, config.pipe2.llm_model
     );
     println!(
-        "│ output   {}/pipe1.md ({:?})",
+        "│ output   {}/pipe2.md ({:?})",
         config.output.dir.display(),
         config.output.mode
     );
@@ -236,7 +244,7 @@ async fn await_with_spinner<F: std::future::Future>(label: &str, model: &str, fu
                 return out;
             }
             _ = ticker.tick() => {
-                print!("\r  ⏳ {label} from {model} {}s — still recording… ", start.elapsed().as_secs());
+                print!("\r  ⏳ {label} ({model}) {}s — still recording… ", start.elapsed().as_secs());
                 let _ = std::io::stdout().flush();
             }
         }
@@ -253,85 +261,22 @@ fn show(text: &str) -> &str {
 }
 
 /// Start streaming capture for one source: append every chunk to the shared
-/// window's raw buffer and feed a Realtime session whose completed utterances
-/// accumulate as the window's live text. Mirrors `daemon::spawn_source`.
-async fn spawn_source(
+/// window's raw buffer. Pipe2 needs only raw audio (it transcribes on trigger),
+/// so there is no WS feed — this is the daemon's capture path with `ws_key = None`.
+fn spawn_source(
     source: Source,
     device: String,
     label: &'static str,
     windows: &Arc<Mutex<WindowManager>>,
-    api_key: &str,
-    config: &Config,
-) -> anyhow::Result<RecordingHandle> {
+) -> RecordingHandle {
     let (handle, std_rx) = Recorder::new(device, label).start_streaming();
-
-    let mut transcription = serde_json::json!({
-        "model": config.pipe1.stt_model,
-        "delay": "high",
-    });
-    if let Some(lang) = &config.pipe1.stt_language {
-        transcription["language"] = serde_json::Value::String(lang.clone());
-    }
-    let session_update = serde_json::json!({
-        "type": "session.update",
-        "session": {
-            "type": "transcription",
-            "audio": { "input": {
-                "format": { "type": "audio/pcm", "rate": 24000 },
-                "transcription": transcription,
-            }}
-        }
-    });
-    let session = RealtimeSession::connect(api_key, REALTIME_ENDPOINT, &session_update)
-        .await
-        .with_context(|| format!("connecting {label} realtime session"))?;
-    let (mut sink, mut events) = session.split();
-
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<f32>>();
-    let commit_every = config.pipe1.commit_every_chunks.max(1);
-
-    // Feed task: bridged chunks → WS sink, commit periodically.
-    tokio::spawn(async move {
-        let mut n = 0usize;
-        while let Some(chunk) = rx.recv().await {
-            if sink.feed(&chunk).await.is_err() {
-                break;
-            }
-            n += 1;
-            if n % commit_every == 0 && sink.commit().await.is_err() {
-                break;
-            }
-        }
-        sink.close().await;
-    });
-
-    // Event task: completed utterances → window live text.
-    let win = Arc::clone(windows);
-    tokio::spawn(async move {
-        loop {
-            match events.next_event().await {
-                Ok(Some(TranscriptEvent::Completed(text))) => {
-                    win.lock()
-                        .expect("window lock poisoned")
-                        .append_text(source, &text);
-                }
-                Ok(_) => {}
-                Err(RealtimeError::Closed) => break,
-                Err(_) => break,
-            }
-        }
-    });
-
-    // Bridge: blocking capture channel → raw buffer (+ forward to WS feed).
     let win = Arc::clone(windows);
     tokio::task::spawn_blocking(move || {
         while let Ok(chunk) = std_rx.recv() {
             win.lock()
                 .expect("window lock poisoned")
                 .append_raw(source, &chunk);
-            let _ = tx.send(chunk);
         }
     });
-
-    Ok(handle)
+    handle
 }

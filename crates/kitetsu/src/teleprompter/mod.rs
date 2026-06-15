@@ -22,5 +22,5 @@ pub mod window;
 pub use config::{Config, ConfigError};
 pub use ipc::{Command, IpcError, send_command, socket_path};
 pub use llm::{AudioPart, Backend, LlmError, Role, Turn};
-pub use pipes::{History, Labels, PipeContext, PipeError, run_pipe1, run_pipe2};
+pub use pipes::{History, Labels, PipeContext, PipeError, PipeOutcome, run_pipe1, run_pipe2};
 pub use window::{Source, Window, WindowManager};

@@ -31,6 +31,17 @@ pub struct Labels {
     pub system: String,
 }
 
+/// What a pipe produced for one window: the transcript the LLM saw (mic and
+/// system kept separate so a caller can show each side) and the suggestion it
+/// returned. The joined, labeled form of `mic_text`/`sys_text` is exactly what
+/// was sent as the user turn.
+#[derive(Debug, Clone)]
+pub struct PipeOutcome {
+    pub mic_text: String,
+    pub sys_text: String,
+    pub reply: String,
+}
+
 /// The per-run inputs a pipe shares across every window (built once by the
 /// daemon/example and borrowed for each trigger).
 pub struct PipeContext<'a> {
@@ -66,10 +77,17 @@ pub async fn run_pipe1(
     history: &History,
     model: &str,
     ctx: &PipeContext<'_>,
-) -> Result<String, PipeError> {
+) -> Result<PipeOutcome, PipeError> {
     let started = Instant::now();
-    let content = label_transcript(window.mic_text.trim(), window.sys_text.trim(), ctx.labels);
-    chat_and_write(window.n, content, history, model, ctx, "pipe1", started).await
+    let mic_text = window.mic_text.trim().to_owned();
+    let sys_text = window.sys_text.trim().to_owned();
+    let content = label_transcript(&mic_text, &sys_text, ctx.labels);
+    let reply = chat_and_write(window.n, content, history, model, ctx, "pipe1", started).await?;
+    Ok(PipeOutcome {
+        mic_text,
+        sys_text,
+        reply,
+    })
 }
 
 /// Run pipe 2 on a snapshotted window: REST-transcribe the raw mic + system
@@ -81,7 +99,7 @@ pub async fn run_pipe2(
     transcriber: &ApiTranscriber,
     model: &str,
     ctx: &PipeContext<'_>,
-) -> Result<String, PipeError> {
+) -> Result<PipeOutcome, PipeError> {
     let started = Instant::now();
     let out_path = ctx.out_path("pipe2.md");
 
@@ -90,7 +108,7 @@ pub async fn run_pipe2(
         transcribe_side(transcriber, &window.sys_raw),
     );
     let (mic_text, sys_text) = match (mic, sys) {
-        (Ok(m), Ok(s)) => (m, s),
+        (Ok(m), Ok(s)) => (m.trim().to_owned(), s.trim().to_owned()),
         (Err(e), _) | (_, Err(e)) => {
             let body = format!("**pipe2 error:** {e}");
             if let Err(io) = write_block(&out_path, window.n, started.elapsed(), &body, ctx.mode) {
@@ -101,8 +119,13 @@ pub async fn run_pipe2(
         }
     };
 
-    let content = label_transcript(mic_text.trim(), sys_text.trim(), ctx.labels);
-    chat_and_write(window.n, content, history, model, ctx, "pipe2", started).await
+    let content = label_transcript(&mic_text, &sys_text, ctx.labels);
+    let reply = chat_and_write(window.n, content, history, model, ctx, "pipe2", started).await?;
+    Ok(PipeOutcome {
+        mic_text,
+        sys_text,
+        reply,
+    })
 }
 
 /// Shared tail of every LLM pipe: append the user turn to history (without

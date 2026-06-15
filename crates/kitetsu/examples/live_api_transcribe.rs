@@ -59,8 +59,8 @@ async fn main() -> anyhow::Result<()> {
                     },
                     "transcription": {
                         "model": "gpt-realtime-whisper",
-                        "language": "en"
-                        // "delay": "low"  // minimal | low | medium | high | xhigh
+                        "language": "en",
+                        "delay": "high"  // minimal | low | medium | high | xhigh
                     }
                 }
             }

@@ -134,6 +134,10 @@ required-features = ["teleprompter"]
 name = "teleprompter_pipe1"
 required-features = ["teleprompter"]
 
+[[example]]
+name = "teleprompter_pipe2"
+required-features = ["teleprompter"]
+
 [dev-dependencies]
 # Used only at binary edges (examples) where anyhow is allowed.
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
