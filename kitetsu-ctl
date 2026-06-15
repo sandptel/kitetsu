@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# kitetsu-ctl — forward a control command to a running teleprompter daemon.
+#
+# Bind each command to a Hyprland key, e.g.:
+#   bind = SUPER, N, exec, /path/to/kitetsu-ctl next
+#   bind = SUPER, H, exec, /path/to/kitetsu-ctl toggle
+#   bind = SUPER, S, exec, /path/to/kitetsu-ctl stop
+#
+# Binary resolution: $KITETSU_BIN, else `kitetsu` on PATH, else
+# ./target/debug/kitetsu next to this script.
+set -euo pipefail
+
+usage() { echo "usage: kitetsu-ctl <next|toggle|stop|ping>" >&2; exit 2; }
+
+[ $# -eq 1 ] || usage
+case "$1" in
+	next | toggle | stop | ping) ;;
+	*) usage ;;
+esac
+
+here="$(dirname "$(readlink -f "$0")")"
+if [ -n "${KITETSU_BIN:-}" ]; then
+	bin="$KITETSU_BIN"
+elif command -v kitetsu >/dev/null 2>&1; then
+	bin="kitetsu"
+elif [ -x "$here/target/debug/kitetsu" ]; then
+	bin="$here/target/debug/kitetsu"
+else
+	echo "kitetsu-ctl: no kitetsu binary (set \$KITETSU_BIN, add to PATH, or build --debug)" >&2
+	exit 1
+fi
+
+exec "$bin" "$1"

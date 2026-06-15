@@ -24,6 +24,14 @@ max_window_secs = 300      # safety cap: drop oldest audio past this if you neve
 # mic_source    = "..."    # optional explicit PulseAudio source; omit to auto-discover
 # system_source = "..."
 
+# Each pipe's overlay card is styled + placed by these keys (all optional):
+#   font_size    body text size (px); header/model scale from it
+#   opacity      master alpha 0.0–1.0 (icons use this; bg/text inherit unless set)
+#   bg_opacity   optional: override the card background alpha
+#   text_opacity optional: override the text alpha
+#   width        fixed card width (px); content wraps to it, height auto-grows
+#   pos_x/pos_y  initial top-left offset (px) of the card on screen
+
 # Pipe 1 — live (Realtime WS) transcription -> LLM. Fastest; lands first.
 [pipe1]
 enabled             = true
@@ -32,6 +40,13 @@ stt_language        = "en"
 commit_every_chunks = 8
 llm_backend         = "openai"   # openai | anthropic
 llm_model           = "gpt-4o"
+font_size           = 19.0
+opacity             = 1.0
+# bg_opacity        = 0.85
+# text_opacity      = 1.0
+width               = 600.0
+pos_x               = 40.0
+pos_y               = 40.0
 
 # Pipe 2 — on-trigger REST chunk transcription -> LLM. Slower, more accurate.
 [pipe2]
@@ -40,6 +55,13 @@ stt_model    = "gpt-4o-transcribe"
 stt_language = "en"
 llm_backend  = "openai"
 llm_model    = "gpt-4o"
+font_size    = 19.0
+opacity      = 1.0
+# bg_opacity  = 0.85
+# text_opacity = 1.0
+width        = 600.0
+pos_x        = 40.0
+pos_y        = 460.0
 
 # Pipe 3 — raw audio sent directly to an audio-capable LLM (OpenAI only).
 [pipe3]

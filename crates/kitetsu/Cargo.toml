@@ -36,6 +36,9 @@ teleprompter = [
     "dep:toml",
     "dep:anyhow",
     "dep:tracing-subscriber",
+    "dep:iced",
+    "dep:iced_layershell",
+    "dep:kitetsu-primitives",
 ]
 
 [dependencies]
@@ -95,6 +98,13 @@ anyhow = { version = "1", optional = true }
 tracing-subscriber = { version = "0.3", features = [
     "env-filter",
 ], optional = true }
+
+# ── teleprompter overlay (presenter) deps (`teleprompter` feature) ────────────
+# The iced render layer (kitetsu-primitives) drawn on a Wayland layer surface.
+# Exact pin for iced_layershell per CLAUDE.md §8; caret for iced.
+iced = { version = "0.14", features = ["svg", "advanced"], optional = true }
+iced_layershell = { version = "=0.18.1", optional = true }
+kitetsu-primitives = { path = "../primitives", optional = true }
 
 # ── Binary: experimental live teleprompter ────────────────────────────────────
 [[bin]]

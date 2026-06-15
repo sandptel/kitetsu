@@ -20,10 +20,13 @@ use crate::listener::{
     discover_default_devices, load_dotenv, require,
 };
 
+use tokio::sync::mpsc::UnboundedSender;
+
 use super::config::{Config, LlmBackendKind, OutputMode, Pipe1Config};
 use super::ipc::{self, Command, IpcError};
 use super::llm::{Backend, LlmError};
 use super::pipes::{History, Labels, PipeContext, run_pipe1, run_pipe2};
+use super::ui::{PipeId, UiEvent};
 use super::window::{Source, WindowManager};
 
 /// OpenAI Realtime transcription endpoint (pipe1 live path).
@@ -81,7 +84,14 @@ struct Pipe2Runtime {
 /// daemon's lifetime. Commands are handled one connection at a time — the control
 /// plane is low-traffic (human key presses), so sequential handling keeps
 /// ordering obvious and needs no shared locking on the socket.
-pub async fn run(config: Config, system_prompt: String) -> Result<(), DaemonError> {
+///
+/// `ui_tx` carries pipe replies to the overlay; the pipe-dispatch sites start
+/// sending on it in the next iteration (it is the structural seam for now).
+pub async fn run(
+    config: Config,
+    system_prompt: String,
+    ui_tx: UnboundedSender<UiEvent>,
+) -> Result<(), DaemonError> {
     log_summary(&config, &system_prompt);
 
     // OpenAI authenticates both the pipe1 WS and the pipe2 REST transcription;
@@ -255,6 +265,7 @@ pub async fn run(config: Config, system_prompt: String) -> Result<(), DaemonErro
                 if let Some(rt) = &pipe1_rt {
                     let rt = rt.clone();
                     let window = Arc::clone(&window);
+                    let ui_tx = ui_tx.clone();
                     tokio::spawn(async move {
                         let ctx = PipeContext {
                             backend: rt.backend.as_ref(),
@@ -264,11 +275,15 @@ pub async fn run(config: Config, system_prompt: String) -> Result<(), DaemonErro
                             mode: rt.mode,
                         };
                         match run_pipe1(&window, &rt.history, &rt.model, &ctx).await {
-                            Ok(outcome) => info!(
-                                window = window.n,
-                                chars = outcome.reply.len(),
-                                "pipe1 suggestion written",
-                            ),
+                            Ok(outcome) => {
+                                let chars = outcome.reply.len();
+                                // Best-effort: if the overlay is gone the send just fails.
+                                let _ = ui_tx.send(UiEvent::Reply {
+                                    pipe: PipeId::Pipe1,
+                                    text: outcome.reply,
+                                });
+                                info!(window = window.n, chars, "pipe1 suggestion written");
+                            }
                             Err(e) => warn!(window = window.n, error = %e, "pipe1 failed"),
                         }
                     });
@@ -277,6 +292,7 @@ pub async fn run(config: Config, system_prompt: String) -> Result<(), DaemonErro
                 if let Some(rt) = &pipe2_rt {
                     let rt = rt.clone();
                     let window = Arc::clone(&window);
+                    let ui_tx = ui_tx.clone();
                     tokio::spawn(async move {
                         let ctx = PipeContext {
                             backend: rt.backend.as_ref(),
@@ -287,15 +303,22 @@ pub async fn run(config: Config, system_prompt: String) -> Result<(), DaemonErro
                         };
                         match run_pipe2(&window, &rt.history, &rt.transcriber, &rt.model, &ctx).await
                         {
-                            Ok(outcome) => info!(
-                                window = window.n,
-                                chars = outcome.reply.len(),
-                                "pipe2 suggestion written",
-                            ),
+                            Ok(outcome) => {
+                                let chars = outcome.reply.len();
+                                let _ = ui_tx.send(UiEvent::Reply {
+                                    pipe: PipeId::Pipe2,
+                                    text: outcome.reply,
+                                });
+                                info!(window = window.n, chars, "pipe2 suggestion written");
+                            }
                             Err(e) => warn!(window = window.n, error = %e, "pipe2 failed"),
                         }
                     });
                 }
+            }
+            Command::Toggle => {
+                let _ = ui_tx.send(UiEvent::Toggle);
+                let _ = ipc::write_ack(&mut stream, "toggled").await;
             }
             Command::Stop => {
                 info!("stop received — shutting down");

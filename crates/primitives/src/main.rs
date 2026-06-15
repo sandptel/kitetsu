@@ -2,15 +2,13 @@
 //! Spawns a single iced_layershell surface anchored top-left, renders one
 //! dummy card, and exits cleanly. No IPC, no LLM, no daemon — layout only.
 
-mod card;
-
 use iced::{Color, Element, Task, theme};
 use iced_layershell::application;
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity};
 use iced_layershell::settings::{LayerShellSettings, Settings};
 use iced_layershell::to_layer_message;
 
-use card::Card;
+use kitetsu_primitives::card::{self, Card};
 
 fn main() -> iced_layershell::Result {
     application(init, namespace, update, view)
@@ -43,17 +41,14 @@ struct App {
 
 // ── Messages ──────────────────────────────────────────────────────────────────
 
-/// User interactions with the card's action buttons.
-/// All are no-ops in this prototype; the enum exists so the buttons compile.
+/// App messages. The card's own [`card::Message`] is mapped into `Card` here.
 /// #[to_layer_message] adds the LayerShell action variants required by the
 /// iced_layershell TryInto<LayerShellCustomActionWithId> bound. See PLAN §4.1.
 #[to_layer_message]
 #[derive(Debug, Clone)]
 pub enum Message {
-    Bookmark,
-    Share,
-    Menu,
-    Drag,
+    /// A button on the card was pressed (drag handle only, for now).
+    Card(card::Message),
 }
 
 // ── iced_layershell program functions ─────────────────────────────────────────
@@ -78,7 +73,7 @@ fn update(_app: &mut App, _msg: Message) -> Task<Message> {
     Task::none()
 }
 
-/// View — delegates entirely to the card module.
+/// View — delegates to the card module, tagging its messages as `Message::Card`.
 fn view(app: &App) -> Element<'_, Message> {
-    card::view(&app.card)
+    card::view(&app.card).map(Message::Card)
 }

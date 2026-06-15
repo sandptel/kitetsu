@@ -126,7 +126,10 @@ impl Default for AudioConfig {
 }
 
 /// Pipe 1 — live (Realtime WS) transcription → LLM. Fastest path.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+///
+/// The `font_size`/`opacity`/`pos_*` keys style and place this pipe's overlay
+/// card; `bg_opacity`/`text_opacity` are `None` → inherit `opacity`.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Pipe1Config {
     pub enabled: bool,
@@ -138,6 +141,13 @@ pub struct Pipe1Config {
     pub commit_every_chunks: usize,
     pub llm_backend: LlmBackendKind,
     pub llm_model: String,
+    pub font_size: f32,
+    pub opacity: f32,
+    pub bg_opacity: Option<f32>,
+    pub text_opacity: Option<f32>,
+    pub width: f32,
+    pub pos_x: f32,
+    pub pos_y: f32,
 }
 
 impl Default for Pipe1Config {
@@ -149,12 +159,19 @@ impl Default for Pipe1Config {
             commit_every_chunks: 8,
             llm_backend: LlmBackendKind::Openai,
             llm_model: "gpt-4o".to_owned(),
+            font_size: 19.0,
+            opacity: 1.0,
+            bg_opacity: None,
+            text_opacity: None,
+            width: 600.0,
+            pos_x: 40.0,
+            pos_y: 40.0,
         }
     }
 }
 
 /// Pipe 2 — on-trigger REST chunk transcription → LLM. Slower, more accurate.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Pipe2Config {
     pub enabled: bool,
@@ -164,6 +181,13 @@ pub struct Pipe2Config {
     pub stt_language: Option<String>,
     pub llm_backend: LlmBackendKind,
     pub llm_model: String,
+    pub font_size: f32,
+    pub opacity: f32,
+    pub bg_opacity: Option<f32>,
+    pub text_opacity: Option<f32>,
+    pub width: f32,
+    pub pos_x: f32,
+    pub pos_y: f32,
 }
 
 impl Default for Pipe2Config {
@@ -174,6 +198,13 @@ impl Default for Pipe2Config {
             stt_language: Some("en".to_owned()),
             llm_backend: LlmBackendKind::Openai,
             llm_model: "gpt-4o".to_owned(),
+            font_size: 19.0,
+            opacity: 1.0,
+            bg_opacity: None,
+            text_opacity: None,
+            width: 600.0,
+            pos_x: 40.0,
+            pos_y: 460.0,
         }
     }
 }
@@ -198,7 +229,7 @@ impl Default for Pipe3Config {
 }
 
 /// The full teleprompter configuration.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub output: OutputConfig,
@@ -244,10 +275,26 @@ impl Config {
                     "pipe1.commit_every_chunks must be greater than 0".to_owned(),
                 ));
             }
+            require_card_style(
+                "pipe1",
+                self.pipe1.font_size,
+                self.pipe1.width,
+                self.pipe1.opacity,
+                self.pipe1.bg_opacity,
+                self.pipe1.text_opacity,
+            )?;
         }
         if self.pipe2.enabled {
             require_nonblank("pipe2.stt_model", &self.pipe2.stt_model)?;
             require_nonblank("pipe2.llm_model", &self.pipe2.llm_model)?;
+            require_card_style(
+                "pipe2",
+                self.pipe2.font_size,
+                self.pipe2.width,
+                self.pipe2.opacity,
+                self.pipe2.bg_opacity,
+                self.pipe2.text_opacity,
+            )?;
         }
         if self.pipe3.enabled {
             require_nonblank("pipe3.llm_model", &self.pipe3.llm_model)?;
@@ -278,6 +325,45 @@ fn require_nonblank(field: &str, value: &str) -> Result<(), ConfigError> {
     } else {
         Ok(())
     }
+}
+
+/// Reject an alpha value outside `0.0..=1.0`.
+fn require_unit(field: &str, value: f32) -> Result<(), ConfigError> {
+    if !(0.0..=1.0).contains(&value) {
+        return Err(ConfigError::Invalid(format!(
+            "{field} must be between 0.0 and 1.0"
+        )));
+    }
+    Ok(())
+}
+
+/// Validate a pipe's overlay-card style keys.
+fn require_card_style(
+    prefix: &str,
+    font_size: f32,
+    width: f32,
+    opacity: f32,
+    bg_opacity: Option<f32>,
+    text_opacity: Option<f32>,
+) -> Result<(), ConfigError> {
+    if font_size <= 0.0 {
+        return Err(ConfigError::Invalid(format!(
+            "{prefix}.font_size must be greater than 0"
+        )));
+    }
+    if width <= 0.0 {
+        return Err(ConfigError::Invalid(format!(
+            "{prefix}.width must be greater than 0"
+        )));
+    }
+    require_unit(&format!("{prefix}.opacity"), opacity)?;
+    if let Some(v) = bg_opacity {
+        require_unit(&format!("{prefix}.bg_opacity"), v)?;
+    }
+    if let Some(v) = text_opacity {
+        require_unit(&format!("{prefix}.text_opacity"), v)?;
+    }
+    Ok(())
 }
 
 fn read_relative(base_dir: &Path, path: &Path) -> Result<String, ConfigError> {
@@ -382,5 +468,32 @@ mod tests {
         let cfg =
             toml::from_str::<Config>("[pipe1]\nenabled = false\nllm_model = \"\"\n").unwrap();
         assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn parses_card_style_keys() {
+        let cfg = toml::from_str::<Config>(
+            "[pipe1]\nfont_size = 26.0\nopacity = 0.8\nbg_opacity = 0.5\npos_x = 100.0\npos_y = 200.0\n",
+        )
+        .unwrap();
+        cfg.validate().expect("valid");
+        assert_eq!(cfg.pipe1.font_size, 26.0);
+        assert_eq!(cfg.pipe1.opacity, 0.8);
+        assert_eq!(cfg.pipe1.bg_opacity, Some(0.5));
+        assert_eq!(cfg.pipe1.text_opacity, None);
+        assert_eq!(cfg.pipe1.pos_x, 100.0);
+        assert_eq!(cfg.pipe1.pos_y, 200.0);
+    }
+
+    #[test]
+    fn out_of_range_opacity_is_invalid() {
+        let cfg = toml::from_str::<Config>("[pipe2]\nopacity = 1.5\n").unwrap();
+        assert!(matches!(cfg.validate(), Err(ConfigError::Invalid(_))));
+    }
+
+    #[test]
+    fn nonpositive_font_size_is_invalid() {
+        let cfg = toml::from_str::<Config>("[pipe1]\nfont_size = 0.0\n").unwrap();
+        assert!(matches!(cfg.validate(), Err(ConfigError::Invalid(_))));
     }
 }

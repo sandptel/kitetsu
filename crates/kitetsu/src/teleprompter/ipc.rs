@@ -21,6 +21,8 @@ pub enum Command {
     Ping,
     /// Trigger a window: dispatch the pipes on audio since the last trigger.
     Next,
+    /// Toggle overlay visibility (content + positions retained).
+    Toggle,
     /// Ask the daemon to shut down.
     Stop,
 }
@@ -118,7 +120,7 @@ mod tests {
 
     #[test]
     fn command_json_round_trips() {
-        for cmd in [Command::Ping, Command::Next, Command::Stop] {
+        for cmd in [Command::Ping, Command::Next, Command::Toggle, Command::Stop] {
             let line = serde_json::to_string(&cmd).expect("serialise");
             let back: Command = serde_json::from_str(&line).expect("deserialise");
             assert_eq!(cmd, back);
