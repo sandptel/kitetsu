@@ -35,6 +35,10 @@ struct Cli {
 enum ClientCommand {
     /// Trigger a window: dispatch the pipes on audio since the last trigger.
     Next,
+    /// Discard everything heard so far and start recording fresh.
+    Trash,
+    /// Pause/resume recording (the accumulated window is kept either way).
+    Pause,
     /// Toggle overlay visibility (content + positions retained).
     Toggle,
     /// Ask the running daemon to shut down.
@@ -59,12 +63,14 @@ fn main() -> anyhow::Result<()> {
 
     let command = match cli.command {
         Some(ClientCommand::Next) => Command::Next,
+        Some(ClientCommand::Trash) => Command::Trash,
+        Some(ClientCommand::Pause) => Command::Pause,
         Some(ClientCommand::Toggle) => Command::Toggle,
         Some(ClientCommand::Stop) => Command::Stop,
         Some(ClientCommand::Ping) => Command::Ping,
         None => {
             anyhow::bail!(
-                "nothing to do: pass --daemon, or a command (next | toggle | stop | ping)"
+                "nothing to do: pass --daemon, or a command (next | trash | pause | toggle | stop | ping)"
             );
         }
     };
@@ -125,13 +131,13 @@ fn card_specs(config: &Config) -> Vec<CardInit> {
         let p = &config.pipe1;
         cards.push(CardInit {
             id: PipeId::Pipe1,
-            header: "Pipe 1 · live".to_owned(),
-            model: format!("@ {}", p.llm_model),
+            model: format!("@ pipe1 · {}", p.llm_model),
             font_size: p.font_size,
             opacity: p.opacity,
             bg_opacity: p.bg_opacity,
             text_opacity: p.text_opacity,
             width: p.width,
+            height: p.height,
             pos_x: p.pos_x,
             pos_y: p.pos_y,
         });
@@ -140,13 +146,13 @@ fn card_specs(config: &Config) -> Vec<CardInit> {
         let p = &config.pipe2;
         cards.push(CardInit {
             id: PipeId::Pipe2,
-            header: "Pipe 2 · chunk".to_owned(),
-            model: format!("@ {}", p.llm_model),
+            model: format!("@ pipe2 · {}", p.llm_model),
             font_size: p.font_size,
             opacity: p.opacity,
             bg_opacity: p.bg_opacity,
             text_opacity: p.text_opacity,
             width: p.width,
+            height: p.height,
             pos_x: p.pos_x,
             pos_y: p.pos_y,
         });

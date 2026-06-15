@@ -143,7 +143,7 @@ async fn main() -> anyhow::Result<()> {
         // continues in the background.
         let call = Instant::now();
         let res = await_with_spinner("transcribing + querying", &model,
-            run_pipe2(&window, &history, &transcriber, &model, &ctx)).await;
+            run_pipe2(&window, &history, &transcriber, &model, &ctx, || {})).await;
         match res {
             Ok(outcome) => {
                 print_transcript(window.n, recorded, &labels, &outcome.mic_text, &outcome.sys_text);

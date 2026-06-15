@@ -2,7 +2,7 @@
 //! Spawns a single iced_layershell surface anchored top-left, renders one
 //! dummy card, and exits cleanly. No IPC, no LLM, no daemon — layout only.
 
-use iced::{Color, Element, Task, theme};
+use iced::{Color, Element, Font, Task, theme};
 use iced_layershell::application;
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity};
 use iced_layershell::settings::{LayerShellSettings, Settings};
@@ -12,6 +12,9 @@ use kitetsu_primitives::card::{self, Card};
 
 fn main() -> iced_layershell::Result {
     application(init, namespace, update, view)
+        .font(card::FONT_REGULAR)
+        .font(card::FONT_BOLD)
+        .default_font(Font::with_name(card::FONT_NAME))
         .settings(Settings {
             layer_settings: LayerShellSettings {
                 // Generous surface; the card shrinks to its content within this.

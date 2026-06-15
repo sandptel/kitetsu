@@ -93,12 +93,16 @@ pub async fn run_pipe1(
 /// Run pipe 2 on a snapshotted window: REST-transcribe the raw mic + system
 /// audio (in parallel) with the configured STT model, then send that transcript
 /// to the LLM and write the suggestion to `<out_dir>/pipe2.md`.
+/// `on_transcribed` runs once the REST transcript is ready, just before the LLM
+/// call — the daemon uses it to flip the card's status from "Transcribing" to
+/// "Fetching response". It does not fire if transcription fails.
 pub async fn run_pipe2(
     window: &Window,
     history: &History,
     transcriber: &ApiTranscriber,
     model: &str,
     ctx: &PipeContext<'_>,
+    on_transcribed: impl FnOnce(),
 ) -> Result<PipeOutcome, PipeError> {
     let started = Instant::now();
     let out_path = ctx.out_path("pipe2.md");
@@ -119,6 +123,7 @@ pub async fn run_pipe2(
         }
     };
 
+    on_transcribed();
     let content = label_transcript(&mic_text, &sys_text, ctx.labels);
     let reply = chat_and_write(window.n, content, history, model, ctx, "pipe2", started).await?;
     Ok(PipeOutcome {

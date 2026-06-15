@@ -10,6 +10,7 @@
 //! themselves (`pipes`), the LLM client (`llm`), or output writing (`output`).
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tracing::{info, warn};
@@ -26,7 +27,7 @@ use super::config::{Config, LlmBackendKind, OutputMode, Pipe1Config};
 use super::ipc::{self, Command, IpcError};
 use super::llm::{Backend, LlmError};
 use super::pipes::{History, Labels, PipeContext, run_pipe1, run_pipe2};
-use super::ui::{PipeId, UiEvent};
+use super::ui::{PipeId, Stage, UiEvent};
 use super::window::{Source, WindowManager};
 
 /// OpenAI Realtime transcription endpoint (pipe1 live path).
@@ -112,6 +113,9 @@ pub async fn run(
     };
 
     let windows = Arc::new(Mutex::new(WindowManager::new(config.audio.max_window_secs)));
+    // Recording gate: while paused, capture chunks are dropped (the already-
+    // accumulated window is kept). Shared with each source's capture bridge.
+    let paused = Arc::new(AtomicBool::new(false));
 
     // Resolve devices: an explicit config source wins; otherwise auto-discover.
     let need_discovery = (config.audio.mic && config.audio.mic_source.is_none())
@@ -138,6 +142,7 @@ pub async fn run(
             device,
             "telep-mic",
             Arc::clone(&windows),
+            Arc::clone(&paused),
             ws_key,
             &config.pipe1,
             &mut tasks,
@@ -158,6 +163,7 @@ pub async fn run(
             device,
             "telep-sys",
             Arc::clone(&windows),
+            Arc::clone(&paused),
             ws_key,
             &config.pipe1,
             &mut tasks,
@@ -274,6 +280,12 @@ pub async fn run(
                             out_dir: rt.out_dir.as_path(),
                             mode: rt.mode,
                         };
+                        // pipe1's transcript is already live, so it goes straight
+                        // to the LLM: show "Fetching response…".
+                        let _ = ui_tx.send(UiEvent::Status {
+                            pipe: PipeId::Pipe1,
+                            stage: Some(Stage::Fetching),
+                        });
                         match run_pipe1(&window, &rt.history, &rt.model, &ctx).await {
                             Ok(outcome) => {
                                 let chars = outcome.reply.len();
@@ -284,7 +296,14 @@ pub async fn run(
                                 });
                                 info!(window = window.n, chars, "pipe1 suggestion written");
                             }
-                            Err(e) => warn!(window = window.n, error = %e, "pipe1 failed"),
+                            Err(e) => {
+                                // Clear the status so the header returns to its baseline.
+                                let _ = ui_tx.send(UiEvent::Status {
+                                    pipe: PipeId::Pipe1,
+                                    stage: None,
+                                });
+                                warn!(window = window.n, error = %e, "pipe1 failed");
+                            }
                         }
                     });
                 }
@@ -301,7 +320,30 @@ pub async fn run(
                             out_dir: rt.out_dir.as_path(),
                             mode: rt.mode,
                         };
-                        match run_pipe2(&window, &rt.history, &rt.transcriber, &rt.model, &ctx).await
+                        // pipe2 re-transcribes first, then calls the LLM: show
+                        // "Transcribing…" now, "Fetching response…" once that's done.
+                        let _ = ui_tx.send(UiEvent::Status {
+                            pipe: PipeId::Pipe2,
+                            stage: Some(Stage::Transcribing),
+                        });
+                        let on_transcribed = {
+                            let ui_tx = ui_tx.clone();
+                            move || {
+                                let _ = ui_tx.send(UiEvent::Status {
+                                    pipe: PipeId::Pipe2,
+                                    stage: Some(Stage::Fetching),
+                                });
+                            }
+                        };
+                        match run_pipe2(
+                            &window,
+                            &rt.history,
+                            &rt.transcriber,
+                            &rt.model,
+                            &ctx,
+                            on_transcribed,
+                        )
+                        .await
                         {
                             Ok(outcome) => {
                                 let chars = outcome.reply.len();
@@ -311,10 +353,40 @@ pub async fn run(
                                 });
                                 info!(window = window.n, chars, "pipe2 suggestion written");
                             }
-                            Err(e) => warn!(window = window.n, error = %e, "pipe2 failed"),
+                            Err(e) => {
+                                let _ = ui_tx.send(UiEvent::Status {
+                                    pipe: PipeId::Pipe2,
+                                    stage: None,
+                                });
+                                warn!(window = window.n, error = %e, "pipe2 failed");
+                            }
                         }
                     });
                 }
+            }
+            Command::Trash => {
+                windows
+                    .lock()
+                    .expect("window lock poisoned")
+                    .clear();
+                info!("conversation trashed — window cleared, recording afresh");
+                let _ = ui_tx.send(UiEvent::Trashed);
+                // End the title flash after 3s (rides this runtime — no UI timer).
+                let ui_tx = ui_tx.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    let _ = ui_tx.send(UiEvent::Untrash);
+                });
+                let _ = ipc::write_ack(&mut stream, "trashed").await;
+            }
+            Command::Pause => {
+                // fetch_xor flips the flag and returns its previous value, so after
+                // the flip we are recording iff we were paused before.
+                let recording = paused.fetch_xor(true, Ordering::Relaxed);
+                let _ = ui_tx.send(UiEvent::Recording(recording));
+                let ack = if recording { "resumed" } else { "paused" };
+                info!(recording, "pause toggled");
+                let _ = ipc::write_ack(&mut stream, ack).await;
             }
             Command::Toggle => {
                 let _ = ui_tx.send(UiEvent::Toggle);
@@ -353,6 +425,7 @@ async fn spawn_source(
     device: String,
     label: &'static str,
     windows: Arc<Mutex<WindowManager>>,
+    paused: Arc<AtomicBool>,
     api_key: Option<&str>,
     pipe1: &Pipe1Config,
     tasks: &mut Vec<tokio::task::JoinHandle<()>>,
@@ -418,6 +491,11 @@ async fn spawn_source(
     let win = Arc::clone(&windows);
     tasks.push(tokio::task::spawn_blocking(move || {
         while let Ok(chunk) = std_rx.recv() {
+            // Paused: drop the chunk so nothing is appended, but keep the window
+            // intact (resume continues accumulating; only `trash` clears it).
+            if paused.load(Ordering::Relaxed) {
+                continue;
+            }
             win.lock()
                 .expect("window lock poisoned")
                 .append_raw(source, &chunk);

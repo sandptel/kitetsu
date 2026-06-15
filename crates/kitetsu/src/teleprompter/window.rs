@@ -103,6 +103,14 @@ impl WindowManager {
         buf.live_text.push_str(t);
     }
 
+    /// Discard the current window's accumulated audio + live text without
+    /// snapshotting. Used by `trash` to drop everything heard so far and start
+    /// the window fresh; the window counter is left unchanged.
+    pub fn clear(&mut self) {
+        self.mic = SourceBuffer::default();
+        self.sys = SourceBuffer::default();
+    }
+
     /// Freeze the current window and clear the buffers for the next one.
     pub fn snapshot_and_reset(&mut self) -> Window {
         self.window_n += 1;
@@ -150,6 +158,19 @@ mod tests {
         assert_eq!(w2.n, 2);
         assert!(w2.mic_raw.is_empty());
         assert!(w2.mic_text.is_empty());
+    }
+
+    #[test]
+    fn clear_discards_buffers_without_bumping_counter() {
+        let mut wm = WindowManager::new(300);
+        wm.append_raw(Source::Mic, &[0.1, 0.2]);
+        wm.append_text(Source::Sys, "hello");
+        wm.clear();
+        let w = wm.snapshot_and_reset();
+        // First snapshot after a clear is still window 1 (clear didn't count).
+        assert_eq!(w.n, 1);
+        assert!(w.mic_raw.is_empty());
+        assert!(w.sys_text.is_empty());
     }
 
     #[test]

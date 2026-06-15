@@ -12,11 +12,13 @@
 //! placeholder cards, and the channel bridge.
 
 use std::sync::Mutex;
+use std::time::Duration;
 
 use futures_util::{Stream, stream};
 use iced::widget::{Space, container, stack};
 use iced::{
-    Color, Element, Event, Length, Padding, Point, Size, Task, Vector, event, mouse, theme, window,
+    Color, Element, Event, Font, Length, Padding, Point, Size, Task, Vector, event, mouse, theme,
+    window,
 };
 use iced_layershell::actions::ActionCallback;
 use iced_layershell::application;
@@ -27,6 +29,8 @@ use tokio::sync::mpsc::UnboundedReceiver;
 
 use kitetsu_primitives::card::{self, Card, Edge};
 
+use super::ipc::{Command, send_command};
+
 /// Which pipe a card represents. Plain data — carried across the channel and used
 /// to route a reply to the right card.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -35,13 +39,39 @@ pub enum PipeId {
     Pipe2,
 }
 
+/// A processing stage a pipe passes through on a trigger, shown in the header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stage {
+    /// pipe2 is REST-transcribing the window.
+    Transcribing,
+    /// The LLM call is in flight.
+    Fetching,
+}
+
+impl Stage {
+    fn header(self) -> &'static str {
+        match self {
+            Stage::Transcribing => "Transcribing…",
+            Stage::Fetching => "Fetching response…",
+        }
+    }
+}
+
 /// An event from the daemon (tokio side) to the overlay (iced side).
 #[derive(Debug, Clone)]
 pub enum UiEvent {
     /// A pipe produced a new suggestion to display.
     Reply { pipe: PipeId, text: String },
+    /// A pipe changed processing stage; `None` clears it back to the idle baseline.
+    Status { pipe: PipeId, stage: Option<Stage> },
+    /// Recording state changed (all cards): `true` = recording, `false` = paused.
+    Recording(bool),
     /// Toggle the overlay's visibility (content + positions retained).
     Toggle,
+    /// Conversation trashed — flash the card titles.
+    Trashed,
+    /// End the trash flash — restore the card titles.
+    Untrash,
 }
 
 /// Process-wide parking spot for the daemon→overlay receiver.
@@ -60,13 +90,13 @@ pub fn install_receiver(rx: UnboundedReceiver<UiEvent>) {
 /// caller. Kept iced-free (plain `f32` position) so `main` need not touch iced.
 pub struct CardInit {
     pub id: PipeId,
-    pub header: String,
     pub model: String,
     pub font_size: f32,
     pub opacity: f32,
     pub bg_opacity: Option<f32>,
     pub text_opacity: Option<f32>,
     pub width: f32,
+    pub height: f32,
     pub pos_x: f32,
     pub pos_y: f32,
 }
@@ -90,19 +120,25 @@ fn capped_height(surface: Size, pos_y: f32) -> f32 {
 /// the receiver: `init` cannot capture).
 static CARD_INIT: Mutex<Option<Vec<CardInit>>> = Mutex::new(None);
 
-/// One card plus where it sits in the surface.
+/// One card plus where it sits in the surface and what mode it's showing.
 struct Slot {
     id: PipeId,
     card: Card,
     pos: Point,
+    /// Whether audio is being recorded (global; drives the idle header + dot).
+    recording: bool,
+    /// The transient per-trigger stage, if any (overrides the idle header).
+    stage: Option<Stage>,
+    /// Whether the trash flash is showing (overrides everything for 3s).
+    trashed: bool,
 }
 
 impl Slot {
     fn from_init(c: CardInit) -> Self {
-        Slot {
+        let mut slot = Slot {
             id: c.id,
             card: Card {
-                header: c.header,
+                header: String::new(),
                 model: c.model,
                 body: vec![("Waiting for the first suggestion…".to_owned(), false)],
                 font_size: c.font_size,
@@ -112,10 +148,34 @@ impl Slot {
                 width: c.width,
                 // Recomputed once the surface size is known.
                 max_height: f32::INFINITY,
-                manual_height: None,
+                // Seed a definite starting height; manual resize updates it.
+                manual_height: Some(c.height),
+                recording: true,
+                blink_on: true,
             },
             pos: Point::new(c.pos_x, c.pos_y),
-        }
+            recording: true,
+            stage: None,
+            trashed: false,
+        };
+        slot.refresh_header();
+        slot
+    }
+
+    /// Recompute the header from current mode: trash flash wins, then the active
+    /// stage, else the recording/paused baseline. Also mirrors `recording` onto
+    /// the card so its dot/resume icon matches.
+    fn refresh_header(&mut self) {
+        self.card.header = if self.trashed {
+            "Trashed".to_owned()
+        } else if let Some(stage) = self.stage {
+            stage.header().to_owned()
+        } else if self.recording {
+            "Listening…".to_owned()
+        } else {
+            "Paused".to_owned()
+        };
+        self.card.recording = self.recording;
     }
 }
 
@@ -158,6 +218,15 @@ pub enum Message {
     Card(PipeId, card::Message),
     /// A new suggestion arrived for a pipe.
     Reply { pipe: PipeId, text: String },
+    /// A pipe changed processing stage (`None` clears it).
+    Status { pipe: PipeId, stage: Option<Stage> },
+    /// Recording state changed for all cards.
+    Recording(bool),
+    /// Recording-dot flash tick.
+    Blink,
+    /// A button-fired IPC command finished (result ignored — the daemon echoes
+    /// the effect back as its own event).
+    CmdDone,
     /// The cursor moved (tracked globally so a grabbed card follows it).
     CursorMoved(Point),
     /// The left mouse button was released anywhere — ends any drag.
@@ -166,6 +235,16 @@ pub enum Message {
     SurfaceResized(Size),
     /// Toggle overlay visibility.
     Toggle,
+    /// Flash the card titles to "Trashed".
+    Trashed,
+    /// Restore the card titles after the flash.
+    Untrash,
+}
+
+/// Fire a control command over the socket — the exact path the CLI uses. The
+/// daemon's reply is ignored; its side effect comes back as a `UiEvent`.
+fn fire(cmd: Command) -> Task<Message> {
+    Task::perform(async move { send_command(&cmd).await }, |_| Message::CmdDone)
 }
 
 /// Split a reply into (text, is_bold) runs on `**…**` markers.
@@ -235,19 +314,26 @@ fn namespace() -> String {
 
 fn update(app: &mut App, message: Message) -> Task<Message> {
     match message {
-        // A card grip was pressed: start moving or resizing.
+        // A card control was pressed. Drag/Resize start an in-app gesture;
+        // Toggle/Pause/Trash forward to the daemon exactly like the CLI.
         Message::Card(pipe, msg) => {
-            let pos = app.slots.iter().find(|s| s.id == pipe).map(|s| s.pos);
-            if let Some(pos) = pos {
-                let kind = match msg {
+            let kind = match msg {
+                card::Message::Toggle => return fire(Command::Toggle),
+                card::Message::Pause => return fire(Command::Pause),
+                card::Message::Trash => return fire(Command::Trash),
+                card::Message::Drag => {
+                    let pos = app.slots.iter().find(|s| s.id == pipe).map(|s| s.pos);
                     // Capture the cursor→top-left offset so the card doesn't jump.
-                    card::Message::Drag => GrabKind::Move {
-                        offset: app.cursor - pos,
-                    },
-                    card::Message::Resize(edge) => GrabKind::Resize { edge },
-                };
-                app.grab = Some(Grab { pipe, kind });
-            }
+                    match pos {
+                        Some(pos) => GrabKind::Move {
+                            offset: app.cursor - pos,
+                        },
+                        None => return Task::none(),
+                    }
+                }
+                card::Message::Resize(edge) => GrabKind::Resize { edge },
+            };
+            app.grab = Some(Grab { pipe, kind });
         }
         Message::CursorMoved(position) => {
             app.cursor = position;
@@ -291,6 +377,39 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::Reply { pipe, text } => {
             if let Some(slot) = app.slots.iter_mut().find(|s| s.id == pipe) {
                 slot.card.body = parse_bold(&text);
+                // The answer is in; the header returns to its idle baseline.
+                slot.stage = None;
+                slot.refresh_header();
+            }
+        }
+        Message::Status { pipe, stage } => {
+            if let Some(slot) = app.slots.iter_mut().find(|s| s.id == pipe) {
+                slot.stage = stage;
+                slot.refresh_header();
+            }
+        }
+        Message::Recording(recording) => {
+            for slot in &mut app.slots {
+                slot.recording = recording;
+                slot.refresh_header();
+            }
+        }
+        Message::Blink => {
+            for slot in &mut app.slots {
+                slot.card.blink_on = !slot.card.blink_on;
+            }
+        }
+        Message::CmdDone => {}
+        Message::Trashed => {
+            for slot in &mut app.slots {
+                slot.trashed = true;
+                slot.refresh_header();
+            }
+        }
+        Message::Untrash => {
+            for slot in &mut app.slots {
+                slot.trashed = false;
+                slot.refresh_header();
             }
         }
         // #[to_layer_message] adds LayerShell action variants we don't emit.
@@ -334,6 +453,9 @@ fn subscription(_app: &App) -> iced::Subscription<Message> {
     iced::Subscription::batch([
         iced::Subscription::run(ui_event_stream),
         event::listen_with(on_event),
+        // Drives the recording-dot flash. Always ticks (cheap); the view only
+        // animates when a card is actually recording.
+        iced::time::every(Duration::from_millis(600)).map(|_| Message::Blink),
     ])
 }
 
@@ -362,7 +484,11 @@ fn ui_event_stream() -> impl Stream<Item = Message> {
         rx.recv().await.map(|event| {
             let message = match event {
                 UiEvent::Reply { pipe, text } => Message::Reply { pipe, text },
+                UiEvent::Status { pipe, stage } => Message::Status { pipe, stage },
+                UiEvent::Recording(on) => Message::Recording(on),
                 UiEvent::Toggle => Message::Toggle,
+                UiEvent::Trashed => Message::Trashed,
+                UiEvent::Untrash => Message::Untrash,
             };
             (message, rx)
         })
@@ -376,6 +502,11 @@ pub fn run(cards: Vec<CardInit>) -> iced_layershell::Result {
     *CARD_INIT.lock().expect("card init lock poisoned") = Some(cards);
     application(init, namespace, update, view)
         .subscription(subscription)
+        // Register JetBrains Mono (regular + bold) and make it the default so
+        // every glyph — including widgets that don't set a font — uses it.
+        .font(card::FONT_REGULAR)
+        .font(card::FONT_BOLD)
+        .default_font(Font::with_name(card::FONT_NAME))
         .settings(Settings {
             layer_settings: LayerShellSettings {
                 // Fullscreen: anchor all four edges, no explicit size.

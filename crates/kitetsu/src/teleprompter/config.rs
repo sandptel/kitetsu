@@ -146,6 +146,7 @@ pub struct Pipe1Config {
     pub bg_opacity: Option<f32>,
     pub text_opacity: Option<f32>,
     pub width: f32,
+    pub height: f32,
     pub pos_x: f32,
     pub pos_y: f32,
 }
@@ -164,6 +165,7 @@ impl Default for Pipe1Config {
             bg_opacity: None,
             text_opacity: None,
             width: 600.0,
+            height: 400.0,
             pos_x: 40.0,
             pos_y: 40.0,
         }
@@ -186,6 +188,7 @@ pub struct Pipe2Config {
     pub bg_opacity: Option<f32>,
     pub text_opacity: Option<f32>,
     pub width: f32,
+    pub height: f32,
     pub pos_x: f32,
     pub pos_y: f32,
 }
@@ -203,6 +206,7 @@ impl Default for Pipe2Config {
             bg_opacity: None,
             text_opacity: None,
             width: 600.0,
+            height: 400.0,
             pos_x: 40.0,
             pos_y: 460.0,
         }
@@ -279,6 +283,7 @@ impl Config {
                 "pipe1",
                 self.pipe1.font_size,
                 self.pipe1.width,
+                self.pipe1.height,
                 self.pipe1.opacity,
                 self.pipe1.bg_opacity,
                 self.pipe1.text_opacity,
@@ -291,6 +296,7 @@ impl Config {
                 "pipe2",
                 self.pipe2.font_size,
                 self.pipe2.width,
+                self.pipe2.height,
                 self.pipe2.opacity,
                 self.pipe2.bg_opacity,
                 self.pipe2.text_opacity,
@@ -342,6 +348,7 @@ fn require_card_style(
     prefix: &str,
     font_size: f32,
     width: f32,
+    height: f32,
     opacity: f32,
     bg_opacity: Option<f32>,
     text_opacity: Option<f32>,
@@ -354,6 +361,11 @@ fn require_card_style(
     if width <= 0.0 {
         return Err(ConfigError::Invalid(format!(
             "{prefix}.width must be greater than 0"
+        )));
+    }
+    if height <= 0.0 {
+        return Err(ConfigError::Invalid(format!(
+            "{prefix}.height must be greater than 0"
         )));
     }
     require_unit(&format!("{prefix}.opacity"), opacity)?;

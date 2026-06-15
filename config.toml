@@ -29,7 +29,8 @@ max_window_secs = 300      # safety cap: drop oldest audio past this if you neve
 #   opacity      master alpha 0.0–1.0 (icons use this; bg/text inherit unless set)
 #   bg_opacity   optional: override the card background alpha
 #   text_opacity optional: override the text alpha
-#   width        fixed card width (px); content wraps to it, height auto-grows
+#   width        fixed card width (px); content wraps to it
+#   height       initial card height (px); resize from the edges, long text scrolls
 #   pos_x/pos_y  initial top-left offset (px) of the card on screen
 
 # Pipe 1 — live (Realtime WS) transcription -> LLM. Fastest; lands first.
@@ -39,12 +40,13 @@ stt_model           = "gpt-realtime-whisper"
 stt_language        = "en"
 commit_every_chunks = 8
 llm_backend         = "openai"   # openai | anthropic
-llm_model           = "gpt-4o"
+llm_model           = "gpt-5.5"
 font_size           = 19.0
 opacity             = 1.0
 # bg_opacity        = 0.85
 # text_opacity      = 1.0
 width               = 600.0
+height              = 400.0
 pos_x               = 40.0
 pos_y               = 40.0
 
@@ -54,12 +56,13 @@ enabled      = true
 stt_model    = "gpt-4o-transcribe"
 stt_language = "en"
 llm_backend  = "openai"
-llm_model    = "gpt-4o"
+llm_model    = "gpt-5.5"
 font_size    = 19.0
 opacity      = 1.0
 # bg_opacity  = 0.85
 # text_opacity = 1.0
 width        = 600.0
+height       = 400.0
 pos_x        = 40.0
 pos_y        = 460.0
 
