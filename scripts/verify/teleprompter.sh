@@ -18,27 +18,28 @@ echo "  EXPECT: exactly one card on screen (not two stacked)."
 pause
 
 step "process → suggestion #1"
-"$ctl" process
+"$ctl" teleprompter process
 echo "  EXPECT: header 'Fetching response…' then a suggestion appears."
 pause
 
 step "process → suggestion #2"
-"$ctl" process
+"$ctl" teleprompter process
 echo "  EXPECT: a second, newer suggestion replaces the first."
 pause
 
 step "backward → older"
-"$ctl" backward
+"$ctl" teleprompter backward
 echo "  EXPECT: card shows suggestion #1 again."
 pause
 
 step "forward → newer"
-"$ctl" forward
+"$ctl" teleprompter forward
 echo "  EXPECT: card shows suggestion #2 again (newest)."
 pause
 
 step "backward past oldest / forward past newest are no-ops"
-"$ctl" backward; "$ctl" backward; "$ctl" forward; "$ctl" forward
+"$ctl" teleprompter backward; "$ctl" teleprompter backward
+"$ctl" teleprompter forward; "$ctl" teleprompter forward
 echo "  EXPECT: stops at #1 going back, at #2 going forward — no blank card."
 pause
 
