@@ -1,7 +1,7 @@
 //! Typed teleprompter configuration loaded from `config.toml`.
 //!
-//! [`Config`] mirrors the on-disk schema: `[output]`, `[prompts]`, `[audio]`,
-//! and one section per pipe (`[live]`/`[chunk]`). Every field has a default so a
+//! [`Config`] mirrors the on-disk schema: `[prompts]`, `[audio]`, and one
+//! section per pipe (`[live]`/`[chunk]`). Every field has a default so a
 //! minimal file works; [`Config::validate`] rejects nonsensical combinations
 //! (enabled pipe with a blank model, zero window cap, …).
 //! Not here: capture, HTTP, or the actual LLM backends — only parsing + checks.
@@ -32,17 +32,6 @@ pub enum ConfigError {
     Invalid(String),
 }
 
-/// How pipe output files are written.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum OutputMode {
-    /// Append each window's block, keeping history.
-    #[default]
-    Append,
-    /// Overwrite the file each window, keeping only the latest.
-    Overwrite,
-}
-
 /// Which LLM provider a pipe calls. The concrete client is built in a later
 /// iteration; here it is only a config tag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -50,25 +39,6 @@ pub enum OutputMode {
 pub enum LlmBackendKind {
     Openai,
     Anthropic,
-}
-
-/// Output-file location and write mode.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct OutputConfig {
-    /// Directory for `pipe{1,2,3}.md`.
-    pub dir: PathBuf,
-    /// Append (keep history) or overwrite (latest only).
-    pub mode: OutputMode,
-}
-
-impl Default for OutputConfig {
-    fn default() -> Self {
-        Self {
-            dir: PathBuf::from("out"),
-            mode: OutputMode::Append,
-        }
-    }
 }
 
 /// Paths to the instruction and personal-context Markdown files.
@@ -217,7 +187,6 @@ impl Default for ChunkConfig {
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
-    pub output: OutputConfig,
     pub prompts: PromptsConfig,
     pub audio: AudioConfig,
     pub live: LiveConfig,
@@ -372,16 +341,12 @@ mod tests {
         assert_eq!(cfg, Config::default());
         assert!(cfg.validate().is_ok());
         assert_eq!(cfg.audio.max_window_secs, 300);
-        assert_eq!(cfg.output.mode, OutputMode::Append);
         assert_eq!(cfg.chunk.stt_model, "gpt-4o-transcribe");
     }
 
     #[test]
     fn parses_full_schema() {
         let toml = r#"
-            [output]
-            dir = "results"
-            mode = "overwrite"
             [prompts]
             prompt = "p.md"
             context = "c.md"
@@ -406,7 +371,6 @@ mod tests {
         "#;
         let cfg = toml::from_str::<Config>(toml).expect("parses");
         cfg.validate().expect("valid");
-        assert_eq!(cfg.output.mode, OutputMode::Overwrite);
         assert!(!cfg.audio.system);
         assert_eq!(cfg.live.llm_backend, LlmBackendKind::Anthropic);
         assert_eq!(cfg.live.commit_every_chunks, 4);

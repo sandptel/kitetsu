@@ -5,7 +5,7 @@
 //! `daemon` owns the long-lived process: capture wiring, window state, and
 //! trigger handling. `config` parses the TOML; `window` holds the rolling
 //! per-source capture buffers; `llm` is the chat-LLM client; `pipes` turns a
-//! window into a suggestion and `output` writes the timestamped result files.
+//! window into a suggestion delivered to the overlay card.
 //!
 //! Deliberately separate from the planned `presenter`/`router`/… architecture —
 //! this is throwaway, branch-local experimentation (see the plan). It reuses the
@@ -16,7 +16,6 @@ pub mod daemon;
 pub mod ipc;
 pub mod layout;
 pub mod llm;
-pub mod output;
 pub mod pipes;
 pub mod ui;
 pub mod window;

@@ -9,7 +9,6 @@
 //! (live transcript) and pipe2 (REST re-transcription). Not here: the pipe bodies
 //! themselves (`pipes`), the LLM client (`llm`), or output writing (`output`).
 
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -23,7 +22,7 @@ use crate::listener::{
 
 use tokio::sync::mpsc::UnboundedSender;
 
-use super::config::{Config, LiveConfig, LlmBackendKind, OutputMode};
+use super::config::{Config, LiveConfig, LlmBackendKind};
 use super::ipc::{self, Command, IpcError};
 use super::llm::{Backend, LlmError};
 use super::pipes::{History, Labels, PipeContext, run_pipe1, run_pipe2};
@@ -61,8 +60,6 @@ struct Pipe1Runtime {
     system_prompt: Arc<str>,
     labels: Arc<Labels>,
     history: History,
-    out_dir: PathBuf,
-    mode: OutputMode,
 }
 
 /// Owned, cheaply-cloneable pipe-2 runtime (adds the REST transcriber over the
@@ -75,8 +72,6 @@ struct Pipe2Runtime {
     system_prompt: Arc<str>,
     labels: Arc<Labels>,
     history: History,
-    out_dir: PathBuf,
-    mode: OutputMode,
 }
 
 /// Bind the control socket, start capture, and serve commands until `Stop`.
@@ -192,8 +187,6 @@ pub async fn run(
             system_prompt: Arc::clone(&system_prompt),
             labels: Arc::clone(&labels),
             history: Arc::new(Mutex::new(Vec::new())),
-            out_dir: config.output.dir.clone(),
-            mode: config.output.mode,
         })
     } else {
         None
@@ -221,8 +214,6 @@ pub async fn run(
             system_prompt: Arc::clone(&system_prompt),
             labels: Arc::clone(&labels),
             history: Arc::new(Mutex::new(Vec::new())),
-            out_dir: config.output.dir.clone(),
-            mode: config.output.mode,
         })
     } else {
         None
@@ -277,8 +268,6 @@ pub async fn run(
                             backend: rt.backend.as_ref(),
                             system_prompt: rt.system_prompt.as_ref(),
                             labels: rt.labels.as_ref(),
-                            out_dir: rt.out_dir.as_path(),
-                            mode: rt.mode,
                         };
                         // pipe1's transcript is already live, so it goes straight
                         // to the LLM: show "Fetching response…".
@@ -317,8 +306,6 @@ pub async fn run(
                             backend: rt.backend.as_ref(),
                             system_prompt: rt.system_prompt.as_ref(),
                             labels: rt.labels.as_ref(),
-                            out_dir: rt.out_dir.as_path(),
-                            mode: rt.mode,
                         };
                         // pipe2 re-transcribes first, then calls the LLM: show
                         // "Transcribing…" now, "Fetching response…" once that's done.
@@ -555,8 +542,6 @@ fn log_summary(config: &Config, system_prompt: &str) {
         mic = config.audio.mic,
         system = config.audio.system,
         max_window_secs = config.audio.max_window_secs,
-        out_dir = %config.output.dir.display(),
-        out_mode = ?config.output.mode,
         system_prompt_chars = system_prompt.len(),
         "config loaded",
     );

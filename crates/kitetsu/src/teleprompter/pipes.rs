@@ -1,24 +1,19 @@
-//! Pipe orchestration: turn a snapshotted [`Window`] into a suggestion file.
+//! Pipe orchestration: turn a snapshotted [`Window`] into a suggestion.
 //!
 //! Each pipe builds a labeled user turn, calls the LLM with the stable system
-//! prompt plus the pipe's accumulating history, and writes a timestamped block to
-//! the pipe's output file. A failed call writes an error block (and the failed
-//! user turn is *not* committed to history, so continuity survives).
+//! prompt plus the pipe's accumulating history, and returns the reply (the daemon
+//! routes it to the overlay card). A failed call leaves the failed user turn
+//! *uncommitted* to history, so continuity survives.
 //! - Pipe 1: accumulated live WS transcript.
 //! - Pipe 2: on-trigger REST re-transcription of the raw window (more accurate).
-//! Pipe 3 (audio-direct) lands in the next iteration.
 
-use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 
 use tracing::warn;
 
 use crate::listener::{ApiError, ApiTranscriber};
 
-use super::config::OutputMode;
 use super::llm::{Backend, LlmError, Turn};
-use super::output::write_block;
 use super::window::Window;
 
 /// Shared, accumulating conversation history for one pipe.
@@ -48,15 +43,6 @@ pub struct PipeContext<'a> {
     pub backend: &'a Backend,
     pub system_prompt: &'a str,
     pub labels: &'a Labels,
-    pub out_dir: &'a Path,
-    pub mode: OutputMode,
-}
-
-impl PipeContext<'_> {
-    /// Output file path for a given pipe file name (e.g. `pipe1.md`).
-    fn out_path(&self, file: &str) -> PathBuf {
-        self.out_dir.join(file)
-    }
 }
 
 /// A pipe run failure: either transcription (pipe 2) or the LLM call.
@@ -71,18 +57,17 @@ pub enum PipeError {
 }
 
 /// Run pipe 1 on a snapshotted window: send the accumulated live transcript to
-/// the LLM and write the suggestion to `<out_dir>/pipe1.md`.
+/// the LLM and return the suggestion.
 pub async fn run_pipe1(
     window: &Window,
     history: &History,
     model: &str,
     ctx: &PipeContext<'_>,
 ) -> Result<PipeOutcome, PipeError> {
-    let started = Instant::now();
     let mic_text = window.mic_text.trim().to_owned();
     let sys_text = window.sys_text.trim().to_owned();
     let content = label_transcript(&mic_text, &sys_text, ctx.labels);
-    let reply = chat_and_write(window.n, content, history, model, ctx, "pipe1", started).await?;
+    let reply = chat_and_commit(window.n, content, history, model, ctx, "pipe1").await?;
     Ok(PipeOutcome {
         mic_text,
         sys_text,
@@ -92,7 +77,7 @@ pub async fn run_pipe1(
 
 /// Run pipe 2 on a snapshotted window: REST-transcribe the raw mic + system
 /// audio (in parallel) with the configured STT model, then send that transcript
-/// to the LLM and write the suggestion to `<out_dir>/pipe2.md`.
+/// to the LLM and return the suggestion.
 /// `on_transcribed` runs once the REST transcript is ready, just before the LLM
 /// call — the daemon uses it to flip the card's status from "Transcribing" to
 /// "Fetching response". It does not fire if transcription fails.
@@ -104,9 +89,6 @@ pub async fn run_pipe2(
     ctx: &PipeContext<'_>,
     on_transcribed: impl FnOnce(),
 ) -> Result<PipeOutcome, PipeError> {
-    let started = Instant::now();
-    let out_path = ctx.out_path("pipe2.md");
-
     let (mic, sys) = tokio::join!(
         transcribe_side(transcriber, &window.mic_raw),
         transcribe_side(transcriber, &window.sys_raw),
@@ -114,10 +96,6 @@ pub async fn run_pipe2(
     let (mic_text, sys_text) = match (mic, sys) {
         (Ok(m), Ok(s)) => (m.trim().to_owned(), s.trim().to_owned()),
         (Err(e), _) | (_, Err(e)) => {
-            let body = format!("**pipe2 error:** {e}");
-            if let Err(io) = write_block(&out_path, window.n, started.elapsed(), &body, ctx.mode) {
-                warn!(window = window.n, error = %io, "pipe2 failed to write error block");
-            }
             warn!(window = window.n, error = %e, "pipe2 transcription failed");
             return Err(PipeError::Transcribe(e));
         }
@@ -125,7 +103,7 @@ pub async fn run_pipe2(
 
     on_transcribed();
     let content = label_transcript(&mic_text, &sys_text, ctx.labels);
-    let reply = chat_and_write(window.n, content, history, model, ctx, "pipe2", started).await?;
+    let reply = chat_and_commit(window.n, content, history, model, ctx, "pipe2").await?;
     Ok(PipeOutcome {
         mic_text,
         sys_text,
@@ -134,20 +112,18 @@ pub async fn run_pipe2(
 }
 
 /// Shared tail of every LLM pipe: append the user turn to history (without
-/// holding the lock across the await), call the LLM, commit the turns + write the
-/// block on success, or write an error block and leave history untouched.
+/// holding the lock across the await), call the LLM, and on success commit both
+/// turns and return the reply; on failure leave history untouched.
 ///
-/// `tag` names the pipe (`"pipe1"`); the output file is `<tag>.md`.
-async fn chat_and_write(
+/// `tag` names the pipe (`"pipe1"`) for log lines only.
+async fn chat_and_commit(
     window_n: u64,
     user_content: String,
     history: &History,
     model: &str,
     ctx: &PipeContext<'_>,
     tag: &str,
-    started: Instant,
 ) -> Result<String, PipeError> {
-    let out_path = ctx.out_path(&format!("{tag}.md"));
     let user_turn = Turn::user(user_content);
 
     let request_turns = {
@@ -159,21 +135,12 @@ async fn chat_and_write(
 
     match ctx.backend.chat(model, ctx.system_prompt, &request_turns).await {
         Ok(reply) => {
-            {
-                let mut guard = history.lock().expect("pipe history lock poisoned");
-                guard.push(user_turn);
-                guard.push(Turn::assistant(reply.clone()));
-            }
-            if let Err(e) = write_block(&out_path, window_n, started.elapsed(), &reply, ctx.mode) {
-                warn!(window = window_n, %tag, error = %e, "pipe failed to write output file");
-            }
+            let mut guard = history.lock().expect("pipe history lock poisoned");
+            guard.push(user_turn);
+            guard.push(Turn::assistant(reply.clone()));
             Ok(reply)
         }
         Err(e) => {
-            let body = format!("**{tag} error:** {e}");
-            if let Err(io) = write_block(&out_path, window_n, started.elapsed(), &body, ctx.mode) {
-                warn!(window = window_n, %tag, error = %io, "pipe failed to write error block");
-            }
             warn!(window = window_n, %tag, error = %e, "pipe LLM call failed");
             Err(PipeError::Llm(e))
         }

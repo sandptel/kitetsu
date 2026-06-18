@@ -114,8 +114,6 @@ async fn main() -> anyhow::Result<()> {
 
     print_banner(&config, &system_prompt, &mic_dev, &sys_dev);
 
-    let out_path = config.output.dir.join("pipe2.md");
-
     // ── Event loop: counter ticks; Enter → wait (transcribe + LLM) while the
     // recording keeps running → show transcript + response → resume counter. ───
     loop {
@@ -134,8 +132,6 @@ async fn main() -> anyhow::Result<()> {
             backend: &backend,
             system_prompt: &system_prompt,
             labels: &labels,
-            out_dir: config.output.dir.as_path(),
-            mode: config.output.mode,
         };
 
         // pipe2 transcribes on trigger, so the transcript is only known once the
@@ -147,7 +143,7 @@ async fn main() -> anyhow::Result<()> {
         match res {
             Ok(outcome) => {
                 print_transcript(window.n, recorded, &labels, &outcome.mic_text, &outcome.sys_text);
-                print_response("pipe2 chunk", &model, call.elapsed(), &outcome.reply, &out_path);
+                print_response("pipe2 chunk", &model, call.elapsed(), &outcome.reply);
             }
             Err(e) => eprintln!("  pipe2 error: {e}\n"),
         }
@@ -180,11 +176,6 @@ fn print_banner(config: &Config, system_prompt: &str, mic_dev: &str, sys_dev: &s
     println!(
         "│ llm      {:?} / {}",
         config.chunk.llm_backend, config.chunk.llm_model
-    );
-    println!(
-        "│ output   {}/pipe2.md ({:?})",
-        config.output.dir.display(),
-        config.output.mode
     );
     println!("└─────────────────────────────────────────────────────────────");
     println!("Talk; the counter shows seconds recorded. Enter = suggestion, Ctrl-D = quit.");
@@ -221,13 +212,13 @@ fn print_transcript(window_n: u64, recorded_secs: u64, labels: &Labels, mic: &st
     println!("    [{}] {}", labels.mic, show(mic));
 }
 
-/// Print the LLM response and confirm where it was appended.
-fn print_response(tag: &str, model: &str, latency: Duration, reply: &str, out_path: &Path) {
+/// Print the LLM response.
+fn print_response(tag: &str, model: &str, latency: Duration, reply: &str) {
     println!("  ◀ RESPONSE ({tag} · {model} · +{:.1}s)", latency.as_secs_f64());
     for line in reply.lines() {
         println!("    {line}");
     }
-    println!("  → appended to {}\n", out_path.display());
+    println!();
 }
 
 /// Await `fut` while showing a live waiting-seconds spinner that makes clear the

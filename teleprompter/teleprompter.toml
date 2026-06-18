@@ -4,12 +4,8 @@
 # uses the anthropic backend) in `.env` or the shell environment.
 #
 # Copy prompt.md.example -> prompt.md and context.md.example -> context.md and
-# edit them; `context.md` is gitignored (personal). Run the daemon from the repo
-# root so the relative paths below resolve.
-
-[output]
-dir  = "out"      # live.md / chunk.md are written here
-mode = "append"   # "append" keeps history; "overwrite" keeps only the latest
+# edit them; `context.md` is gitignored (personal). Paths below resolve relative
+# to this file's directory.
 
 [prompts]
 prompt  = "prompt.md"    # instructions: how the LLM should respond
