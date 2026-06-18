@@ -47,6 +47,10 @@ pub enum TeleprompterAction {
     Pause,
     /// Toggle overlay visibility (content + positions retained).
     Toggle,
+    /// Show the next (newer) suggestion in the card's history.
+    Forward,
+    /// Show the previous (older) suggestion in the card's history.
+    Backward,
 }
 
 /// Failures in the control-plane transport.
@@ -149,6 +153,8 @@ mod tests {
             Command::Teleprompter(TeleprompterAction::Trash),
             Command::Teleprompter(TeleprompterAction::Pause),
             Command::Teleprompter(TeleprompterAction::Toggle),
+            Command::Teleprompter(TeleprompterAction::Forward),
+            Command::Teleprompter(TeleprompterAction::Backward),
         ] {
             let line = serde_json::to_string(&cmd).expect("serialise");
             let back: Command = serde_json::from_str(&line).expect("deserialise");

@@ -25,7 +25,7 @@ max_window_secs = 300      # safety cap: drop oldest audio past this if you neve
 # mic_source    = "..."    # optional explicit PulseAudio source; omit to auto-discover
 # system_source = "..."
 
-# Each pipe's overlay card is styled + placed by these keys (all optional):
+# The single overlay card, shared by whichever pipe runs (all keys optional):
 #   font_size    body text size (px); header/model scale from it
 #   opacity      master alpha 0.0–1.0 (icons use this; bg/text inherit unless set)
 #   bg_opacity   optional: override the card background alpha
@@ -33,6 +33,16 @@ max_window_secs = 300      # safety cap: drop oldest audio past this if you neve
 #   width        fixed card width (px); content wraps to it
 #   height       initial card height (px); resize from the edges, long text scrolls
 #   pos_x/pos_y  initial top-left offset (px) of the card on screen
+# Drag/resize at runtime is remembered and overrides these on next launch.
+[card]
+font_size      = 19.0
+opacity        = 1.0
+# bg_opacity   = 0.85
+# text_opacity = 1.0
+width          = 600.0
+height         = 400.0
+pos_x          = 40.0
+pos_y          = 40.0
 
 # The `live` pipe — Realtime WS transcription -> LLM. Fastest; lands first.
 [live]
@@ -41,14 +51,6 @@ stt_language        = "en"
 commit_every_chunks = 8
 llm_backend         = "openai"   # openai | anthropic
 llm_model           = "gpt-5.5"
-font_size           = 19.0
-opacity             = 1.0
-# bg_opacity        = 0.85
-# text_opacity      = 1.0
-width               = 600.0
-height              = 400.0
-pos_x               = 40.0
-pos_y               = 40.0
 
 # The `chunk` pipe — on-trigger REST chunk transcription -> LLM. Slower, more accurate.
 [chunk]
@@ -56,11 +58,3 @@ stt_model    = "gpt-4o-transcribe"
 stt_language = "en"
 llm_backend  = "openai"
 llm_model    = "gpt-5.5"
-font_size    = 19.0
-opacity      = 1.0
-# bg_opacity  = 0.85
-# text_opacity = 1.0
-width        = 600.0
-height       = 400.0
-pos_x        = 40.0
-pos_y        = 460.0

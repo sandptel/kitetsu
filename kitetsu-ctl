@@ -10,12 +10,12 @@
 # ./target/debug/kitetsu next to this script.
 set -euo pipefail
 
-usage() { echo "usage: kitetsu-ctl <process|trash|pause|toggle|stop|ping>" >&2; exit 2; }
+usage() { echo "usage: kitetsu-ctl <process|trash|pause|toggle|forward|backward|stop|ping>" >&2; exit 2; }
 
 [ $# -eq 1 ] || usage
 # Teleprompter actions are namespaced under `teleprompter`; ping/stop are global.
 case "$1" in
-	process | trash | pause | toggle) set -- teleprompter "$1" ;;
+	process | trash | pause | toggle | forward | backward) set -- teleprompter "$1" ;;
 	stop | ping) ;;
 	*) usage ;;
 esac

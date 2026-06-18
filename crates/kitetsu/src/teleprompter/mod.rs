@@ -25,5 +25,5 @@ pub use ipc::{Command, GlobalAction, IpcError, TeleprompterAction, send_command,
 pub use layout::{Geometry, Layout};
 pub use llm::{AudioPart, Backend, LlmError, Role, Turn};
 pub use pipes::{History, Labels, PipeContext, PipeError, PipeOutcome, run_pipe1, run_pipe2};
-pub use ui::{CardInit, PipeId, Stage, UiEvent};
+pub use ui::{CardInit, Stage, UiEvent};
 pub use window::{Source, Window, WindowManager};

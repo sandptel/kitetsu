@@ -16,7 +16,7 @@ use tracing::info;
 
 use kitetsu::settings::{self, Settings};
 use kitetsu::teleprompter::{
-    CardInit, Command, Config, GlobalAction, PipeId, PipeKind, TeleprompterAction, daemon, layout,
+    CardInit, Command, Config, GlobalAction, PipeKind, TeleprompterAction, daemon, layout,
     send_command, ui,
 };
 
@@ -60,6 +60,10 @@ enum TeleprompterCli {
     Pause,
     /// Toggle overlay visibility (content + positions retained).
     Toggle,
+    /// Show the next (newer) suggestion in the card's history.
+    Forward,
+    /// Show the previous (older) suggestion in the card's history.
+    Backward,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -81,6 +85,8 @@ fn main() -> anyhow::Result<()> {
             TeleprompterCli::Trash => TeleprompterAction::Trash,
             TeleprompterCli::Pause => TeleprompterAction::Pause,
             TeleprompterCli::Toggle => TeleprompterAction::Toggle,
+            TeleprompterCli::Forward => TeleprompterAction::Forward,
+            TeleprompterCli::Backward => TeleprompterAction::Backward,
         }),
     };
 
@@ -119,19 +125,16 @@ fn run_daemon(override_dir: Option<&Path>) -> anyhow::Result<()> {
         .load_system_prompt(&tool_dir)
         .context("loading prompt.md / context.md")?;
 
-    // Build the overlay card specs from config (only enabled pipes get a card),
-    // then let any saved layout override the geometry so cards reopen where the
-    // user last left them.
-    let mut cards = card_specs(&config);
+    // Build the overlay card spec from config, then let any saved layout override
+    // the geometry so the card reopens where the user last left it.
+    let mut card = card_spec(&config);
     let layout_path = layout::layout_path();
     let saved = layout::load(&layout_path);
-    for card in &mut cards {
-        if let Some(g) = saved.get(card.id) {
-            card.pos_x = g.pos_x;
-            card.pos_y = g.pos_y;
-            card.width = g.width;
-            card.height = g.height;
-        }
+    if let Some(g) = saved.card {
+        card.pos_x = g.pos_x;
+        card.pos_y = g.pos_y;
+        card.width = g.width;
+        card.height = g.height;
     }
 
     // Bridge: daemon (tokio) → overlay (iced). Park the receiver for the
@@ -155,44 +158,29 @@ fn run_daemon(override_dir: Option<&Path>) -> anyhow::Result<()> {
         .context("spawning daemon thread")?;
 
     // Run the overlay on the main thread; blocks until the surface closes.
-    ui::run(cards, layout_path).map_err(|e| anyhow::anyhow!("overlay failed: {e}"))?;
+    ui::run(card, layout_path).map_err(|e| anyhow::anyhow!("overlay failed: {e}"))?;
 
     // Overlay closed → the daemon thread winds down with the process.
     drop(daemon_thread);
     Ok(())
 }
 
-/// Build the overlay card spec for the selected pipe (exactly one).
-fn card_specs(config: &Config) -> Vec<CardInit> {
-    let (id, label, p): (PipeId, &str, &_) = match config.pipe {
-        PipeKind::Live => (PipeId::Pipe1, "live", &config.live),
-        // chunk's style fields live on a different type; handle it in its own arm.
-        PipeKind::Chunk => {
-            let p = &config.chunk;
-            return vec![CardInit {
-                id: PipeId::Pipe2,
-                model: format!("@ chunk · {}", p.llm_model),
-                font_size: p.font_size,
-                opacity: p.opacity,
-                bg_opacity: p.bg_opacity,
-                text_opacity: p.text_opacity,
-                width: p.width,
-                height: p.height,
-                pos_x: p.pos_x,
-                pos_y: p.pos_y,
-            }];
-        }
+/// Build the overlay card spec from the shared card style and the active pipe.
+fn card_spec(config: &Config) -> CardInit {
+    let (label, model) = match config.pipe {
+        PipeKind::Live => ("live", &config.live.llm_model),
+        PipeKind::Chunk => ("chunk", &config.chunk.llm_model),
     };
-    vec![CardInit {
-        id,
-        model: format!("@ {label} · {}", p.llm_model),
-        font_size: p.font_size,
-        opacity: p.opacity,
-        bg_opacity: p.bg_opacity,
-        text_opacity: p.text_opacity,
-        width: p.width,
-        height: p.height,
-        pos_x: p.pos_x,
-        pos_y: p.pos_y,
-    }]
+    let c = &config.card;
+    CardInit {
+        model: format!("@ {label} · {model}"),
+        font_size: c.font_size,
+        opacity: c.opacity,
+        bg_opacity: c.bg_opacity,
+        text_opacity: c.text_opacity,
+        width: c.width,
+        height: c.height,
+        pos_x: c.pos_x,
+        pos_y: c.pos_y,
+    }
 }

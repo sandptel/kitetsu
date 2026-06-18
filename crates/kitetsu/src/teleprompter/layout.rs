@@ -1,19 +1,17 @@
-//! Per-card geometry persistence: where each pipe's card sits and how big it is,
-//! remembered across restarts.
+//! Card geometry persistence: where the card sits and how big it is, remembered
+//! across restarts.
 //!
-//! Config supplies the initial geometry; once the user drags or resizes a card,
+//! Config supplies the initial geometry; once the user drags or resizes the card,
 //! the result is saved here and overrides the config defaults on the next launch.
 //! A missing or unreadable file is not an error — it just means "use the config
-//! defaults". Not here: the cards themselves, or when to save (that is `ui`).
+//! defaults". Not here: the card itself, or when to save (that is `ui`).
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
-use super::ui::PipeId;
-
-/// One card's saved position and size (surface-relative pixels).
+/// The card's saved position and size (surface-relative pixels).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Geometry {
     pub pos_x: f32,
@@ -22,31 +20,11 @@ pub struct Geometry {
     pub height: f32,
 }
 
-/// Saved geometry per pipe. Absent entries fall back to the config defaults.
+/// Saved card geometry. An absent entry falls back to the config defaults.
 #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Layout {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pipe1: Option<Geometry>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pipe2: Option<Geometry>,
-}
-
-impl Layout {
-    /// Saved geometry for a pipe, if any.
-    pub fn get(&self, id: PipeId) -> Option<Geometry> {
-        match id {
-            PipeId::Pipe1 => self.pipe1,
-            PipeId::Pipe2 => self.pipe2,
-        }
-    }
-
-    /// Record a pipe's geometry, replacing any previous entry.
-    pub fn set(&mut self, id: PipeId, geometry: Geometry) {
-        match id {
-            PipeId::Pipe1 => self.pipe1 = Some(geometry),
-            PipeId::Pipe2 => self.pipe2 = Some(geometry),
-        }
-    }
+    pub card: Option<Geometry>,
 }
 
 /// The layout file path: `$XDG_STATE_HOME/kitetsu/layout.toml`, falling back to
@@ -87,22 +65,19 @@ mod tests {
 
     #[test]
     fn round_trips_through_toml() {
-        let mut layout = Layout::default();
-        layout.set(
-            PipeId::Pipe1,
-            Geometry { pos_x: 40.0, pos_y: 40.0, width: 612.0, height: 380.0 },
-        );
+        let layout = Layout {
+            card: Some(Geometry { pos_x: 40.0, pos_y: 40.0, width: 612.0, height: 380.0 }),
+        };
         let text = toml::to_string_pretty(&layout).expect("serialise");
         let back: Layout = toml::from_str(&text).expect("deserialise");
         assert_eq!(layout, back);
-        assert_eq!(back.get(PipeId::Pipe2), None);
     }
 
     #[test]
     fn missing_file_is_empty_layout() {
         let layout = load(Path::new("/nonexistent/kitetsu/layout.toml"));
         assert_eq!(layout, Layout::default());
-        assert_eq!(layout.get(PipeId::Pipe1), None);
+        assert_eq!(layout.card, None);
     }
 
     #[test]

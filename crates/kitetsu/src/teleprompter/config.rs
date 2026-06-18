@@ -107,9 +107,6 @@ pub enum PipeKind {
 }
 
 /// The `live` pipe — Realtime WS transcription → LLM. Fastest path.
-///
-/// The `font_size`/`opacity`/`pos_*` keys style and place this pipe's overlay
-/// card; `bg_opacity`/`text_opacity` are `None` → inherit `opacity`.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct LiveConfig {
@@ -121,14 +118,6 @@ pub struct LiveConfig {
     pub commit_every_chunks: usize,
     pub llm_backend: LlmBackendKind,
     pub llm_model: String,
-    pub font_size: f32,
-    pub opacity: f32,
-    pub bg_opacity: Option<f32>,
-    pub text_opacity: Option<f32>,
-    pub width: f32,
-    pub height: f32,
-    pub pos_x: f32,
-    pub pos_y: f32,
 }
 
 impl Default for LiveConfig {
@@ -139,14 +128,6 @@ impl Default for LiveConfig {
             commit_every_chunks: 8,
             llm_backend: LlmBackendKind::Openai,
             llm_model: "gpt-4o".to_owned(),
-            font_size: 19.0,
-            opacity: 1.0,
-            bg_opacity: None,
-            text_opacity: None,
-            width: 600.0,
-            height: 400.0,
-            pos_x: 40.0,
-            pos_y: 40.0,
         }
     }
 }
@@ -161,6 +142,26 @@ pub struct ChunkConfig {
     pub stt_language: Option<String>,
     pub llm_backend: LlmBackendKind,
     pub llm_model: String,
+}
+
+impl Default for ChunkConfig {
+    fn default() -> Self {
+        Self {
+            stt_model: "gpt-4o-transcribe".to_owned(),
+            stt_language: Some("en".to_owned()),
+            llm_backend: LlmBackendKind::Openai,
+            llm_model: "gpt-4o".to_owned(),
+        }
+    }
+}
+
+/// Overlay-card appearance and placement, shared by whichever pipe runs.
+///
+/// `font_size`/`opacity`/`pos_*` style and place the single card;
+/// `bg_opacity`/`text_opacity` are `None` → inherit `opacity`.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CardConfig {
     pub font_size: f32,
     pub opacity: f32,
     pub bg_opacity: Option<f32>,
@@ -171,13 +172,9 @@ pub struct ChunkConfig {
     pub pos_y: f32,
 }
 
-impl Default for ChunkConfig {
+impl Default for CardConfig {
     fn default() -> Self {
         Self {
-            stt_model: "gpt-4o-transcribe".to_owned(),
-            stt_language: Some("en".to_owned()),
-            llm_backend: LlmBackendKind::Openai,
-            llm_model: "gpt-4o".to_owned(),
             font_size: 19.0,
             opacity: 1.0,
             bg_opacity: None,
@@ -185,7 +182,7 @@ impl Default for ChunkConfig {
             width: 600.0,
             height: 400.0,
             pos_x: 40.0,
-            pos_y: 460.0,
+            pos_y: 40.0,
         }
     }
 }
@@ -198,6 +195,7 @@ pub struct Config {
     pub pipe: PipeKind,
     pub prompts: PromptsConfig,
     pub audio: AudioConfig,
+    pub card: CardConfig,
     pub live: LiveConfig,
     pub chunk: ChunkConfig,
 }
@@ -229,6 +227,8 @@ impl Config {
                 "at least one of audio.mic / audio.system must be enabled".to_owned(),
             ));
         }
+        // The one card is shared, so its style is validated regardless of pipe.
+        require_card_style(&self.card)?;
         // Only the selected pipe must be fully configured; the other may be left
         // blank or partial since it never runs.
         match self.pipe {
@@ -240,28 +240,10 @@ impl Config {
                         "live.commit_every_chunks must be greater than 0".to_owned(),
                     ));
                 }
-                require_card_style(
-                    "live",
-                    self.live.font_size,
-                    self.live.width,
-                    self.live.height,
-                    self.live.opacity,
-                    self.live.bg_opacity,
-                    self.live.text_opacity,
-                )?;
             }
             PipeKind::Chunk => {
                 require_nonblank("chunk.stt_model", &self.chunk.stt_model)?;
                 require_nonblank("chunk.llm_model", &self.chunk.llm_model)?;
-                require_card_style(
-                    "chunk",
-                    self.chunk.font_size,
-                    self.chunk.width,
-                    self.chunk.height,
-                    self.chunk.opacity,
-                    self.chunk.bg_opacity,
-                    self.chunk.text_opacity,
-                )?;
             }
         }
         Ok(())
@@ -297,37 +279,29 @@ fn require_unit(field: &str, value: f32) -> Result<(), ConfigError> {
     Ok(())
 }
 
-/// Validate a pipe's overlay-card style keys.
-fn require_card_style(
-    prefix: &str,
-    font_size: f32,
-    width: f32,
-    height: f32,
-    opacity: f32,
-    bg_opacity: Option<f32>,
-    text_opacity: Option<f32>,
-) -> Result<(), ConfigError> {
-    if font_size <= 0.0 {
-        return Err(ConfigError::Invalid(format!(
-            "{prefix}.font_size must be greater than 0"
-        )));
+/// Validate the shared overlay-card style keys.
+fn require_card_style(card: &CardConfig) -> Result<(), ConfigError> {
+    if card.font_size <= 0.0 {
+        return Err(ConfigError::Invalid(
+            "card.font_size must be greater than 0".to_owned(),
+        ));
     }
-    if width <= 0.0 {
-        return Err(ConfigError::Invalid(format!(
-            "{prefix}.width must be greater than 0"
-        )));
+    if card.width <= 0.0 {
+        return Err(ConfigError::Invalid(
+            "card.width must be greater than 0".to_owned(),
+        ));
     }
-    if height <= 0.0 {
-        return Err(ConfigError::Invalid(format!(
-            "{prefix}.height must be greater than 0"
-        )));
+    if card.height <= 0.0 {
+        return Err(ConfigError::Invalid(
+            "card.height must be greater than 0".to_owned(),
+        ));
     }
-    require_unit(&format!("{prefix}.opacity"), opacity)?;
-    if let Some(v) = bg_opacity {
-        require_unit(&format!("{prefix}.bg_opacity"), v)?;
+    require_unit("card.opacity", card.opacity)?;
+    if let Some(v) = card.bg_opacity {
+        require_unit("card.bg_opacity", v)?;
     }
-    if let Some(v) = text_opacity {
-        require_unit(&format!("{prefix}.text_opacity"), v)?;
+    if let Some(v) = card.text_opacity {
+        require_unit("card.text_opacity", v)?;
     }
     Ok(())
 }
@@ -431,28 +405,28 @@ mod tests {
     #[test]
     fn parses_card_style_keys() {
         let cfg = toml::from_str::<Config>(
-            "[live]\nfont_size = 26.0\nopacity = 0.8\nbg_opacity = 0.5\npos_x = 100.0\npos_y = 200.0\n",
+            "[card]\nfont_size = 26.0\nopacity = 0.8\nbg_opacity = 0.5\npos_x = 100.0\npos_y = 200.0\n",
         )
         .unwrap();
         cfg.validate().expect("valid");
-        assert_eq!(cfg.live.font_size, 26.0);
-        assert_eq!(cfg.live.opacity, 0.8);
-        assert_eq!(cfg.live.bg_opacity, Some(0.5));
-        assert_eq!(cfg.live.text_opacity, None);
-        assert_eq!(cfg.live.pos_x, 100.0);
-        assert_eq!(cfg.live.pos_y, 200.0);
+        assert_eq!(cfg.card.font_size, 26.0);
+        assert_eq!(cfg.card.opacity, 0.8);
+        assert_eq!(cfg.card.bg_opacity, Some(0.5));
+        assert_eq!(cfg.card.text_opacity, None);
+        assert_eq!(cfg.card.pos_x, 100.0);
+        assert_eq!(cfg.card.pos_y, 200.0);
     }
 
     #[test]
     fn out_of_range_opacity_is_invalid() {
-        // Select chunk so its card style is the one validated.
-        let cfg = toml::from_str::<Config>("pipe = \"chunk\"\n[chunk]\nopacity = 1.5\n").unwrap();
+        // The card style is validated regardless of which pipe runs.
+        let cfg = toml::from_str::<Config>("pipe = \"chunk\"\n[card]\nopacity = 1.5\n").unwrap();
         assert!(matches!(cfg.validate(), Err(ConfigError::Invalid(_))));
     }
 
     #[test]
     fn nonpositive_font_size_is_invalid() {
-        let cfg = toml::from_str::<Config>("[live]\nfont_size = 0.0\n").unwrap();
+        let cfg = toml::from_str::<Config>("[card]\nfont_size = 0.0\n").unwrap();
         assert!(matches!(cfg.validate(), Err(ConfigError::Invalid(_))));
     }
 }

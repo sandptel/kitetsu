@@ -26,7 +26,7 @@ use super::config::{Config, LiveConfig, LlmBackendKind, PipeKind};
 use super::ipc::{self, Command, GlobalAction, IpcError, TeleprompterAction};
 use super::llm::{Backend, LlmError};
 use super::pipes::{History, Labels, PipeContext, run_pipe1, run_pipe2};
-use super::ui::{PipeId, Stage, UiEvent};
+use super::ui::{Stage, UiEvent};
 use super::window::{Source, WindowManager};
 
 /// OpenAI Realtime transcription endpoint (pipe1 live path).
@@ -269,7 +269,6 @@ pub async fn run(
                         // pipe1's transcript is already live, so it goes straight
                         // to the LLM: show "Fetching response…".
                         let _ = ui_tx.send(UiEvent::Status {
-                            pipe: PipeId::Pipe1,
                             stage: Some(Stage::Fetching),
                         });
                         match run_pipe1(&window, &rt.history, &rt.model, &ctx).await {
@@ -277,17 +276,13 @@ pub async fn run(
                                 let chars = outcome.reply.len();
                                 // Best-effort: if the overlay is gone the send just fails.
                                 let _ = ui_tx.send(UiEvent::Reply {
-                                    pipe: PipeId::Pipe1,
                                     text: outcome.reply,
                                 });
                                 info!(window = window.n, chars, "pipe1 suggestion written");
                             }
                             Err(e) => {
                                 // Clear the status so the header returns to its baseline.
-                                let _ = ui_tx.send(UiEvent::Status {
-                                    pipe: PipeId::Pipe1,
-                                    stage: None,
-                                });
+                                let _ = ui_tx.send(UiEvent::Status { stage: None });
                                 warn!(window = window.n, error = %e, "pipe1 failed");
                             }
                         }
@@ -307,14 +302,12 @@ pub async fn run(
                         // pipe2 re-transcribes first, then calls the LLM: show
                         // "Transcribing…" now, "Fetching response…" once that's done.
                         let _ = ui_tx.send(UiEvent::Status {
-                            pipe: PipeId::Pipe2,
                             stage: Some(Stage::Transcribing),
                         });
                         let on_transcribed = {
                             let ui_tx = ui_tx.clone();
                             move || {
                                 let _ = ui_tx.send(UiEvent::Status {
-                                    pipe: PipeId::Pipe2,
                                     stage: Some(Stage::Fetching),
                                 });
                             }
@@ -332,16 +325,12 @@ pub async fn run(
                             Ok(outcome) => {
                                 let chars = outcome.reply.len();
                                 let _ = ui_tx.send(UiEvent::Reply {
-                                    pipe: PipeId::Pipe2,
                                     text: outcome.reply,
                                 });
                                 info!(window = window.n, chars, "pipe2 suggestion written");
                             }
                             Err(e) => {
-                                let _ = ui_tx.send(UiEvent::Status {
-                                    pipe: PipeId::Pipe2,
-                                    stage: None,
-                                });
+                                let _ = ui_tx.send(UiEvent::Status { stage: None });
                                 warn!(window = window.n, error = %e, "pipe2 failed");
                             }
                         }
@@ -375,6 +364,16 @@ pub async fn run(
             Command::Teleprompter(TeleprompterAction::Toggle) => {
                 let _ = ui_tx.send(UiEvent::Toggle);
                 let _ = ipc::write_ack(&mut stream, "toggled").await;
+            }
+            // History nav is purely presentational: the overlay owns the reply
+            // list, so the daemon just relays the keypress.
+            Command::Teleprompter(TeleprompterAction::Forward) => {
+                let _ = ui_tx.send(UiEvent::Forward);
+                let _ = ipc::write_ack(&mut stream, "forward").await;
+            }
+            Command::Teleprompter(TeleprompterAction::Backward) => {
+                let _ = ui_tx.send(UiEvent::Backward);
+                let _ = ipc::write_ack(&mut stream, "backward").await;
             }
             Command::Kitetsu(GlobalAction::Stop) => {
                 info!("stop received — shutting down");
