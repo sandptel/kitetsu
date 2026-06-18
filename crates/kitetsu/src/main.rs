@@ -168,13 +168,14 @@ fn run_daemon(override_dir: Option<&Path>) -> anyhow::Result<()> {
 
 /// Build the overlay card spec from the shared card style and the active pipe.
 fn card_spec(config: &Config) -> CardInit {
-    let (label, model) = match config.pipe {
-        PipeKind::Live => ("live", &config.live.llm_model),
-        PipeKind::Chunk => ("chunk", &config.chunk.llm_model),
+    let (label, stt, llm) = match config.pipe {
+        PipeKind::Live => ("live", &config.live.stt_model, &config.live.llm_model),
+        PipeKind::Chunk => ("chunk", &config.chunk.stt_model, &config.chunk.llm_model),
     };
     let c = &config.card;
     CardInit {
-        model: format!("@ {label} · {model}"),
+        // Shows the active pipe and its STT → LLM chain, e.g. "@chunk : gpt-4o-transcribe → gpt-5.5".
+        model: format!("@{label} : {stt} → {llm}"),
         font_size: c.font_size,
         opacity: c.opacity,
         bg_opacity: c.bg_opacity,

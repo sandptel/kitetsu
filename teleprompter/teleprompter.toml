@@ -45,6 +45,11 @@ pos_x          = 40.0
 pos_y          = 40.0
 
 # The `live` pipe — Realtime WS transcription -> LLM. Fastest; lands first.
+#   stt_model     Realtime-API transcription model (WebSocket). Use a realtime
+#                 model here, e.g. "gpt-realtime-whisper". A REST-only model
+#                 will not stream.
+#   commit_every_chunks  how many audio chunks before a partial is committed.
+#   llm_model     chat model for the reply (see [chunk] for valid values).
 [live]
 stt_model           = "gpt-realtime-whisper"
 stt_language        = "en"
@@ -53,6 +58,12 @@ llm_backend         = "openai"   # openai | anthropic
 llm_model           = "gpt-5.5"
 
 # The `chunk` pipe — on-trigger REST chunk transcription -> LLM. Slower, more accurate.
+#   stt_model     REST /v1/audio/transcriptions model. Use "gpt-4o-transcribe",
+#                 "gpt-4o-mini-transcribe", or "whisper-1". NOT a realtime-only
+#                 model like "gpt-realtime-whisper" — that 404s on this endpoint.
+#   llm_backend   openai | anthropic
+#   llm_model     chat model: openai e.g. "gpt-5.5" / "gpt-4o"; anthropic e.g.
+#                 "claude-…" (must match llm_backend).
 [chunk]
 stt_model    = "gpt-4o-transcribe"
 stt_language = "en"

@@ -281,8 +281,10 @@ pub async fn run(
                                 info!(window = window.n, chars, "pipe1 suggestion written");
                             }
                             Err(e) => {
-                                // Clear the status so the header returns to its baseline.
-                                let _ = ui_tx.send(UiEvent::Status { stage: None });
+                                // Surface the failure on the card (also clears the stage).
+                                let _ = ui_tx.send(UiEvent::Error {
+                                    msg: format!("⚠ Couldn't fetch a response — {e}"),
+                                });
                                 warn!(window = window.n, error = %e, "pipe1 failed");
                             }
                         }
@@ -330,7 +332,9 @@ pub async fn run(
                                 info!(window = window.n, chars, "pipe2 suggestion written");
                             }
                             Err(e) => {
-                                let _ = ui_tx.send(UiEvent::Status { stage: None });
+                                let _ = ui_tx.send(UiEvent::Error {
+                                    msg: format!("⚠ Couldn't fetch a response — {e}"),
+                                });
                                 warn!(window = window.n, error = %e, "pipe2 failed");
                             }
                         }

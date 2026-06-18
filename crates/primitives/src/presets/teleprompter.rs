@@ -21,6 +21,8 @@ pub enum Message {
     Drag,
     /// A resize grip pressed — start resizing from that edge.
     Resize(Edge),
+    /// Process the window now (same as the `process` command).
+    Process,
     /// Hide/show the overlay (same as the `toggle` command).
     Toggle,
     /// Pause/resume recording (same as the `pause` command).
@@ -34,6 +36,7 @@ const LOGO_SVG: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/assets/logo-gemini.svg"
 ));
+const PROCESS_SVG: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/process.svg"));
 const TOGGLE_SVG: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/toggle.svg"));
 const RECORD_SVG: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/record.svg"));
 const RESUME_SVG: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/resume.svg"));
@@ -158,6 +161,7 @@ pub fn view<'a>(card: &'a Card, palette: &Base16) -> Element<'a, Message> {
         .align_y(Alignment::Center);
 
     // ── Right cluster: control icons + the drag handle ────────────────────────
+    let process_btn = icon_button(PROCESS_SVG, icon_alpha, Message::Process);
     let toggle_btn = icon_button(TOGGLE_SVG, icon_alpha, Message::Toggle);
     let trash_btn = icon_button(TRASH_SVG, icon_alpha, Message::Trash);
 
@@ -174,7 +178,7 @@ pub fn view<'a>(card: &'a Card, palette: &Base16) -> Element<'a, Message> {
     let drag_handle = chrome::drag_handle(icon_alpha, Message::Drag);
 
     // ── Top bar: left + flexible spacer + controls + drag handle ──────────────
-    let controls = row![toggle_btn, pause_btn, trash_btn, drag_handle]
+    let controls = row![process_btn, toggle_btn, pause_btn, trash_btn, drag_handle]
         .spacing(4)
         .align_y(Alignment::Center);
     let top_bar = row![left_cluster, space().width(Length::Fill), controls]

@@ -71,6 +71,8 @@ pub enum UiEvent {
     Forward,
     /// Step to the previous (older) suggestion in history.
     Backward,
+    /// A pipe failed — show this text on the card (transient; not added to history).
+    Error { msg: String },
 }
 
 /// Process-wide parking spot for the daemon→overlay receiver.
@@ -235,6 +237,9 @@ pub enum Message {
     Forward,
     /// Step to the previous (older) suggestion.
     Backward,
+    /// A pipe failed — show the error on the card. (Not `Error`: that name
+    /// collides with the `TryInto::Error` the `#[to_layer_message]` macro adds.)
+    Failed { msg: String },
 }
 
 /// Fire a control command over the socket — the exact path the CLI uses. The
@@ -345,6 +350,9 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         // Toggle/Pause/Trash forward to the daemon exactly like the CLI.
         Message::Card(msg) => {
             let kind = match msg {
+                card::Message::Process => {
+                    return fire(Command::Teleprompter(TeleprompterAction::Process));
+                }
                 card::Message::Toggle => {
                     return fire(Command::Teleprompter(TeleprompterAction::Toggle));
                 }
@@ -424,6 +432,13 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 app.idx -= 1;
                 app.show_current();
             }
+        }
+        Message::Failed { msg } => {
+            // Show the failure on the card without polluting reply history; the
+            // next reply or nav step replaces it.
+            app.card.body = vec![(msg, false)];
+            app.stage = None;
+            app.refresh_header();
         }
         Message::Status { stage } => {
             app.stage = stage;
@@ -510,6 +525,7 @@ fn ui_event_stream() -> impl Stream<Item = Message> {
                 UiEvent::Untrash => Message::Untrash,
                 UiEvent::Forward => Message::Forward,
                 UiEvent::Backward => Message::Backward,
+                UiEvent::Error { msg } => Message::Failed { msg },
             };
             (message, rx)
         })

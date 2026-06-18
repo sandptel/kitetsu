@@ -141,7 +141,9 @@ async fn chat_and_commit(
             Ok(reply)
         }
         Err(e) => {
-            warn!(window = window_n, %tag, error = %e, "pipe LLM call failed");
+            // `?e` (Debug) keeps the source chain — e.g. the inner reqwest kind
+            // (timeout / connection-closed / decode) that `%e` would discard.
+            warn!(window = window_n, %tag, error = ?e, "pipe LLM call failed");
             Err(PipeError::Llm(e))
         }
     }
