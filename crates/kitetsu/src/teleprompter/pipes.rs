@@ -4,8 +4,8 @@
 //! prompt plus the pipe's accumulating history, and returns the reply (the daemon
 //! routes it to the overlay card). A failed call leaves the failed user turn
 //! *uncommitted* to history, so continuity survives.
-//! - Pipe 1: accumulated live WS transcript.
-//! - Pipe 2: on-trigger REST re-transcription of the raw window (more accurate).
+//! - Live pipe: accumulated live WS transcript.
+//! - Chunk pipe: on-trigger REST re-transcription of the raw window (more accurate).
 
 use std::sync::{Arc, Mutex};
 
@@ -45,20 +45,20 @@ pub struct PipeContext<'a> {
     pub labels: &'a Labels,
 }
 
-/// A pipe run failure: either transcription (pipe 2) or the LLM call.
+/// A pipe run failure: either transcription (chunk pipe) or the LLM call.
 #[derive(Debug, thiserror::Error)]
 pub enum PipeError {
     /// The LLM chat call failed.
     #[error(transparent)]
     Llm(#[from] LlmError),
-    /// REST transcription failed (pipe 2 only).
+    /// REST transcription failed (chunk pipe only).
     #[error("transcription failed: {0}")]
     Transcribe(#[from] ApiError),
 }
 
-/// Run pipe 1 on a snapshotted window: send the accumulated live transcript to
-/// the LLM and return the suggestion.
-pub async fn run_pipe1(
+/// Run the live pipe on a snapshotted window: send the accumulated live
+/// transcript to the LLM and return the suggestion.
+pub async fn run_live(
     window: &Window,
     history: &History,
     model: &str,
@@ -67,7 +67,7 @@ pub async fn run_pipe1(
     let mic_text = window.mic_text.trim().to_owned();
     let sys_text = window.sys_text.trim().to_owned();
     let content = label_transcript(&mic_text, &sys_text, ctx.labels);
-    let reply = chat_and_commit(window.n, content, history, model, ctx, "pipe1").await?;
+    let reply = chat_and_commit(window.n, content, history, model, ctx, "live").await?;
     Ok(PipeOutcome {
         mic_text,
         sys_text,
@@ -75,13 +75,13 @@ pub async fn run_pipe1(
     })
 }
 
-/// Run pipe 2 on a snapshotted window: REST-transcribe the raw mic + system
+/// Run the chunk pipe on a snapshotted window: REST-transcribe the raw mic + system
 /// audio (in parallel) with the configured STT model, then send that transcript
 /// to the LLM and return the suggestion.
 /// `on_transcribed` runs once the REST transcript is ready, just before the LLM
 /// call — the daemon uses it to flip the card's status from "Transcribing" to
 /// "Fetching response". It does not fire if transcription fails.
-pub async fn run_pipe2(
+pub async fn run_chunk(
     window: &Window,
     history: &History,
     transcriber: &ApiTranscriber,
@@ -96,14 +96,14 @@ pub async fn run_pipe2(
     let (mic_text, sys_text) = match (mic, sys) {
         (Ok(m), Ok(s)) => (m.trim().to_owned(), s.trim().to_owned()),
         (Err(e), _) | (_, Err(e)) => {
-            warn!(window = window.n, error = %e, "pipe2 transcription failed");
+            warn!(window = window.n, error = %e, "chunk transcription failed");
             return Err(PipeError::Transcribe(e));
         }
     };
 
     on_transcribed();
     let content = label_transcript(&mic_text, &sys_text, ctx.labels);
-    let reply = chat_and_commit(window.n, content, history, model, ctx, "pipe2").await?;
+    let reply = chat_and_commit(window.n, content, history, model, ctx, "chunk").await?;
     Ok(PipeOutcome {
         mic_text,
         sys_text,
@@ -115,7 +115,7 @@ pub async fn run_pipe2(
 /// holding the lock across the await), call the LLM, and on success commit both
 /// turns and return the reply; on failure leave history untouched.
 ///
-/// `tag` names the pipe (`"pipe1"`) for log lines only.
+/// `tag` names the pipe (`"live"` / `"chunk"`) for log lines only.
 async fn chat_and_commit(
     window_n: u64,
     user_content: String,

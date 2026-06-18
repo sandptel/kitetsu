@@ -141,11 +141,11 @@ name = "teleprompter_llm"
 required-features = ["teleprompter"]
 
 [[example]]
-name = "teleprompter_pipe1"
+name = "teleprompter_live"
 required-features = ["teleprompter"]
 
 [[example]]
-name = "teleprompter_pipe2"
+name = "teleprompter_chunk"
 required-features = ["teleprompter"]
 
 [dev-dependencies]

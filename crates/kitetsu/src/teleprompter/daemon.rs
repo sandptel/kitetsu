@@ -3,11 +3,12 @@
 //!
 //! Each enabled source (mic, system) runs a streaming `Recorder`; every captured
 //! chunk is appended to the shared [`WindowManager`]'s raw buffer (for the
-//! on-trigger pipes) and, when pipe1 is enabled, fed to a `RealtimeSession` whose
-//! completed utterances accumulate as live text. On `Next`, the window is
-//! snapshotted and reset, then the enabled pipes run in the background: pipe1
-//! (live transcript) and pipe2 (REST re-transcription). Not here: the pipe bodies
-//! themselves (`pipes`), the LLM client (`llm`), or output writing (`output`).
+//! on-trigger chunk pipe) and, when the live pipe is enabled, fed to a
+//! `RealtimeSession` whose completed utterances accumulate as live text. On
+//! `Next`, the window is snapshotted and reset, then the selected pipe runs in
+//! the background: the live pipe (live transcript) or the chunk pipe (REST
+//! re-transcription). Not here: the pipe bodies themselves (`pipes`) or the LLM
+//! client (`llm`).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -25,11 +26,11 @@ use tokio::sync::mpsc::UnboundedSender;
 use super::config::{Config, LiveConfig, LlmBackendKind, PipeKind};
 use super::ipc::{self, Command, GlobalAction, IpcError, TeleprompterAction};
 use super::llm::{Backend, LlmError};
-use super::pipes::{History, Labels, PipeContext, run_pipe1, run_pipe2};
+use super::pipes::{History, Labels, PipeContext, run_chunk, run_live};
 use super::ui::{Stage, UiEvent};
 use super::window::{Source, WindowManager};
 
-/// OpenAI Realtime transcription endpoint (pipe1 live path).
+/// OpenAI Realtime transcription endpoint (live pipe path).
 const REALTIME_ENDPOINT: &str = "wss://api.openai.com/v1/realtime?intent=transcription";
 
 /// Failures that terminate the daemon.
@@ -41,7 +42,7 @@ pub enum DaemonError {
     /// Audio device discovery or capture setup failed.
     #[error("audio capture: {0}")]
     Capture(#[source] ListenerError),
-    /// The OpenAI key needed for live (pipe1) transcription was missing.
+    /// The OpenAI key needed for live (live pipe) transcription was missing.
     #[error("missing API key for live transcription: {0}")]
     Key(#[source] KeyError),
     /// A live-transcription WebSocket failed to connect at startup.
@@ -52,9 +53,9 @@ pub enum DaemonError {
     Llm(#[source] LlmError),
 }
 
-/// Owned, cheaply-cloneable pipe-1 runtime shared into each spawned trigger task.
+/// Owned, cheaply-cloneable live-pipe runtime shared into each spawned trigger task.
 #[derive(Clone)]
-struct Pipe1Runtime {
+struct LiveRuntime {
     backend: Arc<Backend>,
     model: String,
     system_prompt: Arc<str>,
@@ -62,10 +63,10 @@ struct Pipe1Runtime {
     history: History,
 }
 
-/// Owned, cheaply-cloneable pipe-2 runtime (adds the REST transcriber over the
-/// pipe-1 shape).
+/// Owned, cheaply-cloneable chunk-pipe runtime (adds the REST transcriber over
+/// the live shape).
 #[derive(Clone)]
-struct Pipe2Runtime {
+struct ChunkRuntime {
     transcriber: Arc<ApiTranscriber>,
     backend: Arc<Backend>,
     model: String,
@@ -90,7 +91,7 @@ pub async fn run(
 ) -> Result<(), DaemonError> {
     log_summary(&config, &system_prompt);
 
-    // OpenAI authenticates both the pipe1 WS and the pipe2 REST transcription;
+    // OpenAI authenticates both the live-pipe WS and the chunk-pipe REST transcription;
     // load `.env` from the working directory first so a key file there is picked up.
     if let Ok(cwd) = std::env::current_dir() {
         load_dotenv(&cwd.join(".env"));
@@ -171,14 +172,14 @@ pub async fn run(
         system: config.audio.system_label.clone(),
     });
 
-    // Build the pipe-1 runtime once (its LLM key may differ from the OpenAI key
+    // Build the live-pipe runtime once (its LLM key may differ from the OpenAI key
     // when the configured llm_backend is anthropic).
-    let pipe1_rt = if config.pipe == PipeKind::Live {
+    let live_rt = if config.pipe == PipeKind::Live {
         let backend = build_backend(
             config.live.llm_backend,
             openai_key.as_deref(),
         )?;
-        Some(Pipe1Runtime {
+        Some(LiveRuntime {
             backend: Arc::new(backend),
             model: config.live.llm_model.clone(),
             system_prompt: Arc::clone(&system_prompt),
@@ -189,8 +190,8 @@ pub async fn run(
         None
     };
 
-    // Build the pipe-2 runtime: a REST transcriber (OpenAI) plus its LLM backend.
-    let pipe2_rt = if config.pipe == PipeKind::Chunk {
+    // Build the chunk-pipe runtime: a REST transcriber (OpenAI) plus its LLM backend.
+    let chunk_rt = if config.pipe == PipeKind::Chunk {
         let key = openai_key
             .clone()
             .expect("OpenAI key always loaded");
@@ -204,7 +205,7 @@ pub async fn run(
         )
         .map_err(|_| DaemonError::Key(KeyError::Missing(OPENAI_API_KEY)))?;
         let backend = build_backend(config.chunk.llm_backend, openai_key.as_deref())?;
-        Some(Pipe2Runtime {
+        Some(ChunkRuntime {
             transcriber: Arc::new(transcriber),
             backend: Arc::new(backend),
             model: config.chunk.llm_model.clone(),
@@ -256,7 +257,7 @@ pub async fn run(
                 // the overlay card.
                 let window = Arc::new(window);
 
-                if let Some(rt) = &pipe1_rt {
+                if let Some(rt) = &live_rt {
                     let rt = rt.clone();
                     let window = Arc::clone(&window);
                     let ui_tx = ui_tx.clone();
@@ -266,32 +267,32 @@ pub async fn run(
                             system_prompt: rt.system_prompt.as_ref(),
                             labels: rt.labels.as_ref(),
                         };
-                        // pipe1's transcript is already live, so it goes straight
-                        // to the LLM: show "Fetching response…".
+                        // The live pipe's transcript is already live, so it goes
+                        // straight to the LLM: show "Fetching response…".
                         let _ = ui_tx.send(UiEvent::Status {
                             stage: Some(Stage::Fetching),
                         });
-                        match run_pipe1(&window, &rt.history, &rt.model, &ctx).await {
+                        match run_live(&window, &rt.history, &rt.model, &ctx).await {
                             Ok(outcome) => {
                                 let chars = outcome.reply.len();
                                 // Best-effort: if the overlay is gone the send just fails.
                                 let _ = ui_tx.send(UiEvent::Reply {
                                     text: outcome.reply,
                                 });
-                                info!(window = window.n, chars, "pipe1 suggestion written");
+                                info!(window = window.n, chars, "live suggestion written");
                             }
                             Err(e) => {
                                 // Surface the failure on the card (also clears the stage).
                                 let _ = ui_tx.send(UiEvent::Error {
                                     msg: format!("⚠ Couldn't fetch a response — {e}"),
                                 });
-                                warn!(window = window.n, error = %e, "pipe1 failed");
+                                warn!(window = window.n, error = %e, "live pipe failed");
                             }
                         }
                     });
                 }
 
-                if let Some(rt) = &pipe2_rt {
+                if let Some(rt) = &chunk_rt {
                     let rt = rt.clone();
                     let window = Arc::clone(&window);
                     let ui_tx = ui_tx.clone();
@@ -301,7 +302,7 @@ pub async fn run(
                             system_prompt: rt.system_prompt.as_ref(),
                             labels: rt.labels.as_ref(),
                         };
-                        // pipe2 re-transcribes first, then calls the LLM: show
+                        // The chunk pipe re-transcribes first, then calls the LLM: show
                         // "Transcribing…" now, "Fetching response…" once that's done.
                         let _ = ui_tx.send(UiEvent::Status {
                             stage: Some(Stage::Transcribing),
@@ -314,7 +315,7 @@ pub async fn run(
                                 });
                             }
                         };
-                        match run_pipe2(
+                        match run_chunk(
                             &window,
                             &rt.history,
                             &rt.transcriber,
@@ -329,13 +330,13 @@ pub async fn run(
                                 let _ = ui_tx.send(UiEvent::Reply {
                                     text: outcome.reply,
                                 });
-                                info!(window = window.n, chars, "pipe2 suggestion written");
+                                info!(window = window.n, chars, "chunk suggestion written");
                             }
                             Err(e) => {
                                 let _ = ui_tx.send(UiEvent::Error {
                                     msg: format!("⚠ Couldn't fetch a response — {e}"),
                                 });
-                                warn!(window = window.n, error = %e, "pipe2 failed");
+                                warn!(window = window.n, error = %e, "chunk pipe failed");
                             }
                         }
                     });
@@ -402,7 +403,7 @@ pub async fn run(
 }
 
 /// Wire one audio source: start streaming capture, append every chunk to the
-/// shared window's raw buffer, and (when pipe1 is enabled) feed a Realtime
+/// shared window's raw buffer, and (when the live pipe is enabled) feed a Realtime
 /// session whose completed utterances accumulate as live text.
 ///
 /// Returns the capture handle so the caller can stop it on shutdown. Spawned
@@ -487,7 +488,7 @@ async fn spawn_source(
                 .expect("window lock poisoned")
                 .append_raw(source, &chunk);
             if let Some(ref tx) = ws_tx {
-                // If the feed task is gone we still keep buffering raw for pipe2/3.
+                // If the feed task is gone we still keep buffering raw for the chunk pipe.
                 let _ = tx.send(chunk);
             }
         }

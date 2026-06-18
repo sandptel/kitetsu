@@ -5,11 +5,11 @@
 //! This exercises the same `Backend`/`Turn` path the pipes will use — only the
 //! transcript is faked (typed on the CLI) instead of captured from audio.
 //!
-//! Usage (uses pipe1's backend + model from config.toml):
+//! Usage (uses the live pipe's backend + model from config.toml):
 //!   cargo run -p kitetsu --features teleprompter --example teleprompter_llm
 //!   cargo run -p kitetsu --features teleprompter --example teleprompter_llm -- "So, tell me about yourself."
 //!
-//! Requires `OPENAI_API_KEY` (or `ANTHROPIC_API_KEY` if pipe1 uses anthropic)
+//! Requires `OPENAI_API_KEY` (or `ANTHROPIC_API_KEY` if the live pipe uses anthropic)
 //! in the shell or `.env`, plus prompt.md + context.md next to config.toml.
 
 use std::path::Path;
@@ -43,7 +43,7 @@ async fn main() -> anyhow::Result<()> {
     println!("{system_prompt}");
     println!("────────────────────────────────────────────────────\n");
 
-    // ── Build the backend from pipe1's config ─────────────────────────────────
+    // ── Build the backend from the live pipe's config ─────────────────────────
     if let Ok(cwd) = std::env::current_dir() {
         load_dotenv(&cwd.join(".env"));
     }
