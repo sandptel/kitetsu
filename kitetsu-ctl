@@ -2,7 +2,7 @@
 # kitetsu-ctl — forward a control command to a running teleprompter daemon.
 #
 # Bind each command to a Hyprland key, e.g.:
-#   bind = SUPER, N, exec, /path/to/kitetsu-ctl next
+#   bind = SUPER, N, exec, /path/to/kitetsu-ctl process
 #   bind = SUPER, H, exec, /path/to/kitetsu-ctl toggle
 #   bind = SUPER, S, exec, /path/to/kitetsu-ctl stop
 #
@@ -10,11 +10,13 @@
 # ./target/debug/kitetsu next to this script.
 set -euo pipefail
 
-usage() { echo "usage: kitetsu-ctl <next|trash|pause|toggle|stop|ping>" >&2; exit 2; }
+usage() { echo "usage: kitetsu-ctl <process|trash|pause|toggle|stop|ping>" >&2; exit 2; }
 
 [ $# -eq 1 ] || usage
+# Teleprompter actions are namespaced under `teleprompter`; ping/stop are global.
 case "$1" in
-	next | trash | pause | toggle | stop | ping) ;;
+	process | trash | pause | toggle) set -- teleprompter "$1" ;;
+	stop | ping) ;;
 	*) usage ;;
 esac
 
@@ -30,4 +32,4 @@ else
 	exit 1
 fi
 
-exec "$bin" "$1"
+exec "$bin" "$@"

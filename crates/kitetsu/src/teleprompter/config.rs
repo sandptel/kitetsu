@@ -95,6 +95,17 @@ impl Default for AudioConfig {
     }
 }
 
+/// Which pipe the teleprompter runs. Exactly one is active per session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PipeKind {
+    /// Live Realtime-WS transcript → LLM (fastest, lands first).
+    #[default]
+    Live,
+    /// On-trigger REST re-transcription → LLM (slower, more accurate).
+    Chunk,
+}
+
 /// The `live` pipe — Realtime WS transcription → LLM. Fastest path.
 ///
 /// The `font_size`/`opacity`/`pos_*` keys style and place this pipe's overlay
@@ -102,7 +113,6 @@ impl Default for AudioConfig {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct LiveConfig {
-    pub enabled: bool,
     /// Realtime transcription model.
     pub stt_model: String,
     /// ISO-639-1 language hint; `None` → auto-detect.
@@ -124,7 +134,6 @@ pub struct LiveConfig {
 impl Default for LiveConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
             stt_model: "gpt-realtime-whisper".to_owned(),
             stt_language: Some("en".to_owned()),
             commit_every_chunks: 8,
@@ -146,7 +155,6 @@ impl Default for LiveConfig {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ChunkConfig {
-    pub enabled: bool,
     /// REST transcription model.
     pub stt_model: String,
     /// ISO-639-1 language hint; `None` → auto-detect.
@@ -166,7 +174,6 @@ pub struct ChunkConfig {
 impl Default for ChunkConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
             stt_model: "gpt-4o-transcribe".to_owned(),
             stt_language: Some("en".to_owned()),
             llm_backend: LlmBackendKind::Openai,
@@ -187,6 +194,8 @@ impl Default for ChunkConfig {
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
+    /// Which pipe runs this session.
+    pub pipe: PipeKind,
     pub prompts: PromptsConfig,
     pub audio: AudioConfig,
     pub live: LiveConfig,
@@ -220,36 +229,40 @@ impl Config {
                 "at least one of audio.mic / audio.system must be enabled".to_owned(),
             ));
         }
-        if self.live.enabled {
-            require_nonblank("live.stt_model", &self.live.stt_model)?;
-            require_nonblank("live.llm_model", &self.live.llm_model)?;
-            if self.live.commit_every_chunks == 0 {
-                return Err(ConfigError::Invalid(
-                    "live.commit_every_chunks must be greater than 0".to_owned(),
-                ));
+        // Only the selected pipe must be fully configured; the other may be left
+        // blank or partial since it never runs.
+        match self.pipe {
+            PipeKind::Live => {
+                require_nonblank("live.stt_model", &self.live.stt_model)?;
+                require_nonblank("live.llm_model", &self.live.llm_model)?;
+                if self.live.commit_every_chunks == 0 {
+                    return Err(ConfigError::Invalid(
+                        "live.commit_every_chunks must be greater than 0".to_owned(),
+                    ));
+                }
+                require_card_style(
+                    "live",
+                    self.live.font_size,
+                    self.live.width,
+                    self.live.height,
+                    self.live.opacity,
+                    self.live.bg_opacity,
+                    self.live.text_opacity,
+                )?;
             }
-            require_card_style(
-                "live",
-                self.live.font_size,
-                self.live.width,
-                self.live.height,
-                self.live.opacity,
-                self.live.bg_opacity,
-                self.live.text_opacity,
-            )?;
-        }
-        if self.chunk.enabled {
-            require_nonblank("chunk.stt_model", &self.chunk.stt_model)?;
-            require_nonblank("chunk.llm_model", &self.chunk.llm_model)?;
-            require_card_style(
-                "chunk",
-                self.chunk.font_size,
-                self.chunk.width,
-                self.chunk.height,
-                self.chunk.opacity,
-                self.chunk.bg_opacity,
-                self.chunk.text_opacity,
-            )?;
+            PipeKind::Chunk => {
+                require_nonblank("chunk.stt_model", &self.chunk.stt_model)?;
+                require_nonblank("chunk.llm_model", &self.chunk.llm_model)?;
+                require_card_style(
+                    "chunk",
+                    self.chunk.font_size,
+                    self.chunk.width,
+                    self.chunk.height,
+                    self.chunk.opacity,
+                    self.chunk.bg_opacity,
+                    self.chunk.text_opacity,
+                )?;
+            }
         }
         Ok(())
     }
@@ -340,6 +353,7 @@ mod tests {
         let cfg: Config = toml::from_str("").expect("empty toml parses");
         assert_eq!(cfg, Config::default());
         assert!(cfg.validate().is_ok());
+        assert_eq!(cfg.pipe, PipeKind::Live);
         assert_eq!(cfg.audio.max_window_secs, 300);
         assert_eq!(cfg.chunk.stt_model, "gpt-4o-transcribe");
     }
@@ -347,6 +361,7 @@ mod tests {
     #[test]
     fn parses_full_schema() {
         let toml = r#"
+            pipe = "live"
             [prompts]
             prompt = "p.md"
             context = "c.md"
@@ -357,24 +372,22 @@ mod tests {
             system_label = "They"
             max_window_secs = 120
             [live]
-            enabled = true
             stt_model = "gpt-realtime-whisper"
             stt_language = "en"
             commit_every_chunks = 4
             llm_backend = "anthropic"
             llm_model = "claude-opus-4-8"
             [chunk]
-            enabled = false
             stt_model = "whisper-1"
             llm_backend = "openai"
             llm_model = "gpt-4o-mini"
         "#;
         let cfg = toml::from_str::<Config>(toml).expect("parses");
         cfg.validate().expect("valid");
+        assert_eq!(cfg.pipe, PipeKind::Live);
         assert!(!cfg.audio.system);
         assert_eq!(cfg.live.llm_backend, LlmBackendKind::Anthropic);
         assert_eq!(cfg.live.commit_every_chunks, 4);
-        assert!(!cfg.chunk.enabled);
     }
 
     #[test]
@@ -396,16 +409,23 @@ mod tests {
     }
 
     #[test]
-    fn enabled_pipe_with_blank_model_is_invalid() {
+    fn selected_pipe_with_blank_model_is_invalid() {
+        // pipe defaults to live, so a blank live model fails validation.
         let cfg = toml::from_str::<Config>("[live]\nllm_model = \"  \"\n").unwrap();
         assert!(matches!(cfg.validate(), Err(ConfigError::Invalid(_))));
     }
 
     #[test]
-    fn disabled_pipe_skips_model_validation() {
+    fn unselected_pipe_skips_model_validation() {
+        // pipe = live, so the unused chunk pipe may be left blank.
         let cfg =
-            toml::from_str::<Config>("[live]\nenabled = false\nllm_model = \"\"\n").unwrap();
+            toml::from_str::<Config>("pipe = \"live\"\n[chunk]\nllm_model = \"\"\n").unwrap();
         assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn invalid_pipe_value_is_rejected() {
+        assert!(toml::from_str::<Config>("pipe = \"audio\"\n").is_err());
     }
 
     #[test]
@@ -425,7 +445,8 @@ mod tests {
 
     #[test]
     fn out_of_range_opacity_is_invalid() {
-        let cfg = toml::from_str::<Config>("[chunk]\nopacity = 1.5\n").unwrap();
+        // Select chunk so its card style is the one validated.
+        let cfg = toml::from_str::<Config>("pipe = \"chunk\"\n[chunk]\nopacity = 1.5\n").unwrap();
         assert!(matches!(cfg.validate(), Err(ConfigError::Invalid(_))));
     }
 

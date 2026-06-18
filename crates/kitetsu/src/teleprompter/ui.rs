@@ -1,7 +1,7 @@
 //! The teleprompter overlay — the only place in the binary that touches iced.
 //!
 //! A single transparent, fullscreen Wayland layer surface. Each enabled pipe is
-//! drawn as a [`kitetsu_primitives::card::Card`] positioned at an `(x, y)` offset
+//! drawn as a [`kitetsu_primitives::presets::teleprompter::Card`] positioned at an `(x, y)` offset
 //! inside that one surface (anchored top-left). Pipe replies arrive from the
 //! tokio daemon over an unbounded channel and are pumped into the iced loop via a
 //! [`Subscription`]; because `Subscription::run` takes a bare `fn` pointer, the
@@ -28,9 +28,10 @@ use iced_layershell::settings::{LayerShellSettings, Settings};
 use iced_layershell::to_layer_message;
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use kitetsu_primitives::card::{self, Card, Edge};
+use kitetsu_primitives::presets::teleprompter::{self as card, Card};
+use kitetsu_primitives::{Edge, FONT_BOLD, FONT_NAME, FONT_REGULAR};
 
-use super::ipc::{Command, send_command};
+use super::ipc::{Command, TeleprompterAction, send_command};
 use super::layout::{self, Geometry, Layout};
 
 /// Which pipe a card represents. Plain data — carried across the channel and used
@@ -350,9 +351,9 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         // Toggle/Pause/Trash forward to the daemon exactly like the CLI.
         Message::Card(pipe, msg) => {
             let kind = match msg {
-                card::Message::Toggle => return fire(Command::Toggle),
-                card::Message::Pause => return fire(Command::Pause),
-                card::Message::Trash => return fire(Command::Trash),
+                card::Message::Toggle => return fire(Command::Teleprompter(TeleprompterAction::Toggle)),
+                card::Message::Pause => return fire(Command::Teleprompter(TeleprompterAction::Pause)),
+                card::Message::Trash => return fire(Command::Teleprompter(TeleprompterAction::Trash)),
                 card::Message::Drag => {
                     let pos = app.slots.iter().find(|s| s.id == pipe).map(|s| s.pos);
                     // Capture the cursor→top-left offset so the card doesn't jump.
@@ -548,9 +549,9 @@ pub fn run(cards: Vec<CardInit>, layout_path: PathBuf) -> iced_layershell::Resul
         .subscription(subscription)
         // Register JetBrains Mono (regular + bold) and make it the default so
         // every glyph — including widgets that don't set a font — uses it.
-        .font(card::FONT_REGULAR)
-        .font(card::FONT_BOLD)
-        .default_font(Font::with_name(card::FONT_NAME))
+        .font(FONT_REGULAR)
+        .font(FONT_BOLD)
+        .default_font(Font::with_name(FONT_NAME))
         .settings(Settings {
             layer_settings: LayerShellSettings {
                 // Fullscreen: anchor all four edges, no explicit size.

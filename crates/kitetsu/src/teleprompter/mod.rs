@@ -20,8 +20,8 @@ pub mod pipes;
 pub mod ui;
 pub mod window;
 
-pub use config::{Config, ConfigError};
-pub use ipc::{Command, IpcError, send_command, socket_path};
+pub use config::{Config, ConfigError, PipeKind};
+pub use ipc::{Command, GlobalAction, IpcError, TeleprompterAction, send_command, socket_path};
 pub use layout::{Geometry, Layout};
 pub use llm::{AudioPart, Backend, LlmError, Role, Turn};
 pub use pipes::{History, Labels, PipeContext, PipeError, PipeOutcome, run_pipe1, run_pipe2};

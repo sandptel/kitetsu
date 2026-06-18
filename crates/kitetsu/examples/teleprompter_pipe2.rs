@@ -32,7 +32,7 @@ use kitetsu::listener::{
 };
 use kitetsu::teleprompter::config::LlmBackendKind;
 use kitetsu::teleprompter::{
-    Backend, Config, History, Labels, PipeContext, Source, WindowManager, run_pipe2,
+    Backend, Config, History, Labels, PipeContext, PipeKind, Source, WindowManager, run_pipe2,
 };
 
 #[tokio::main]
@@ -53,8 +53,8 @@ async fn main() -> anyhow::Result<()> {
         .load_system_prompt(base_dir)
         .context("loading prompt.md / context.md (copy the .example files)")?;
 
-    if !config.chunk.enabled {
-        anyhow::bail!("pipe2 is disabled in config.toml — enable [chunk] to run this example");
+    if config.pipe != PipeKind::Chunk {
+        anyhow::bail!("set `pipe = \"chunk\"` in teleprompter.toml to run this example");
     }
 
     // ── Keys + backend + REST transcriber (same the daemon builds) ────────────

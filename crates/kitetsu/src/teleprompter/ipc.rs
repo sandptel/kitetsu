@@ -13,22 +13,40 @@ use tokio::net::{UnixListener, UnixStream};
 
 /// A control command sent from the CLI to the running daemon.
 ///
-/// Serialised as a single JSON object tagged by `cmd`, e.g. `{"cmd":"next"}`.
+/// Serialised as a `{tool, action}` object so the supervisor can route it:
+/// global commands carry `tool = "kitetsu"`, tool commands name the tool, e.g.
+/// `{"tool":"teleprompter","action":"process"}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "cmd", rename_all = "lowercase")]
+#[serde(tag = "tool", content = "action", rename_all = "lowercase")]
 pub enum Command {
+    /// Supervisor-level command (no tool).
+    Kitetsu(GlobalAction),
+    /// Command routed to the teleprompter tool.
+    Teleprompter(TeleprompterAction),
+}
+
+/// Supervisor-level actions, not tied to any tool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GlobalAction {
     /// Health check — the daemon replies `pong`.
     Ping,
-    /// Trigger a window: dispatch the pipes on audio since the last trigger.
-    Next,
+    /// Ask the daemon to shut down.
+    Stop,
+}
+
+/// Actions the teleprompter tool understands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TeleprompterAction {
+    /// Process the window: dispatch the selected pipe on audio since the last trigger.
+    Process,
     /// Discard everything heard so far and start the window fresh.
     Trash,
     /// Pause/resume recording (the accumulated window is kept either way).
     Pause,
     /// Toggle overlay visibility (content + positions retained).
     Toggle,
-    /// Ask the daemon to shut down.
-    Stop,
 }
 
 /// Failures in the control-plane transport.
@@ -125,12 +143,12 @@ mod tests {
     #[test]
     fn command_json_round_trips() {
         for cmd in [
-            Command::Ping,
-            Command::Next,
-            Command::Trash,
-            Command::Pause,
-            Command::Toggle,
-            Command::Stop,
+            Command::Kitetsu(GlobalAction::Ping),
+            Command::Kitetsu(GlobalAction::Stop),
+            Command::Teleprompter(TeleprompterAction::Process),
+            Command::Teleprompter(TeleprompterAction::Trash),
+            Command::Teleprompter(TeleprompterAction::Pause),
+            Command::Teleprompter(TeleprompterAction::Toggle),
         ] {
             let line = serde_json::to_string(&cmd).expect("serialise");
             let back: Command = serde_json::from_str(&line).expect("deserialise");
@@ -139,14 +157,28 @@ mod tests {
     }
 
     #[test]
-    fn command_tag_is_lowercase_cmd_field() {
-        assert_eq!(serde_json::to_string(&Command::Next).unwrap(), r#"{"cmd":"next"}"#);
-        assert_eq!(serde_json::to_string(&Command::Stop).unwrap(), r#"{"cmd":"stop"}"#);
+    fn command_serialises_as_tool_action() {
+        assert_eq!(
+            serde_json::to_string(&Command::Teleprompter(TeleprompterAction::Process)).unwrap(),
+            r#"{"tool":"teleprompter","action":"process"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&Command::Kitetsu(GlobalAction::Stop)).unwrap(),
+            r#"{"tool":"kitetsu","action":"stop"}"#
+        );
     }
 
     #[test]
-    fn unknown_command_is_rejected() {
-        assert!(serde_json::from_str::<Command>(r#"{"cmd":"explode"}"#).is_err());
+    fn unknown_tool_is_rejected() {
+        assert!(serde_json::from_str::<Command>(r#"{"tool":"bogus","action":"ping"}"#).is_err());
+    }
+
+    #[test]
+    fn unknown_action_is_rejected() {
+        assert!(
+            serde_json::from_str::<Command>(r#"{"tool":"teleprompter","action":"explode"}"#)
+                .is_err()
+        );
     }
 
     #[test]

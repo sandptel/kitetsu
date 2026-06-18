@@ -22,8 +22,8 @@ use crate::listener::{
 
 use tokio::sync::mpsc::UnboundedSender;
 
-use super::config::{Config, LiveConfig, LlmBackendKind};
-use super::ipc::{self, Command, IpcError};
+use super::config::{Config, LiveConfig, LlmBackendKind, PipeKind};
+use super::ipc::{self, Command, GlobalAction, IpcError, TeleprompterAction};
 use super::llm::{Backend, LlmError};
 use super::pipes::{History, Labels, PipeContext, run_pipe1, run_pipe2};
 use super::ui::{PipeId, Stage, UiEvent};
@@ -95,13 +95,10 @@ pub async fn run(
     if let Ok(cwd) = std::env::current_dir() {
         load_dotenv(&cwd.join(".env"));
     }
-    let openai_key = if config.live.enabled || config.chunk.enabled {
-        Some(require(OPENAI_API_KEY).map_err(DaemonError::Key)?)
-    } else {
-        None
-    };
+    // Either pipe needs the OpenAI key for transcription (live WS / chunk REST).
+    let openai_key = Some(require(OPENAI_API_KEY).map_err(DaemonError::Key)?);
     // Only the live pipe opens the realtime WS; chunk only needs the key for REST.
-    let ws_key = if config.live.enabled {
+    let ws_key = if config.pipe == PipeKind::Live {
         openai_key.as_deref()
     } else {
         None
@@ -176,7 +173,7 @@ pub async fn run(
 
     // Build the pipe-1 runtime once (its LLM key may differ from the OpenAI key
     // when the configured llm_backend is anthropic).
-    let pipe1_rt = if config.live.enabled {
+    let pipe1_rt = if config.pipe == PipeKind::Live {
         let backend = build_backend(
             config.live.llm_backend,
             openai_key.as_deref(),
@@ -193,10 +190,10 @@ pub async fn run(
     };
 
     // Build the pipe-2 runtime: a REST transcriber (OpenAI) plus its LLM backend.
-    let pipe2_rt = if config.chunk.enabled {
+    let pipe2_rt = if config.pipe == PipeKind::Chunk {
         let key = openai_key
             .clone()
-            .expect("OpenAI key loaded when chunk is enabled");
+            .expect("OpenAI key always loaded");
         let transcriber = ApiTranscriber::new(
             key,
             ApiConfig {
@@ -235,10 +232,10 @@ pub async fn run(
         };
 
         match cmd {
-            Command::Ping => {
+            Command::Kitetsu(GlobalAction::Ping) => {
                 let _ = ipc::write_ack(&mut stream, "pong").await;
             }
-            Command::Next => {
+            Command::Teleprompter(TeleprompterAction::Process) => {
                 let window = windows
                     .lock()
                     .expect("window lock poisoned")
@@ -254,9 +251,9 @@ pub async fn run(
                 let ack = format!("queued window {}", window.n);
                 let _ = ipc::write_ack(&mut stream, &ack).await;
 
-                // Fire the pipes in the background; the ack is already sent so the
-                // client returns immediately while suggestions land in the files.
-                // pipe1 (live) is fast; pipe2 (REST re-transcribe) lands later.
+                // Fire the selected pipe in the background; the ack is already sent
+                // so the client returns immediately while the suggestion lands on
+                // the overlay card.
                 let window = Arc::new(window);
 
                 if let Some(rt) = &pipe1_rt {
@@ -351,7 +348,7 @@ pub async fn run(
                     });
                 }
             }
-            Command::Trash => {
+            Command::Teleprompter(TeleprompterAction::Trash) => {
                 windows
                     .lock()
                     .expect("window lock poisoned")
@@ -366,7 +363,7 @@ pub async fn run(
                 });
                 let _ = ipc::write_ack(&mut stream, "trashed").await;
             }
-            Command::Pause => {
+            Command::Teleprompter(TeleprompterAction::Pause) => {
                 // fetch_xor flips the flag and returns its previous value, so after
                 // the flip we are recording iff we were paused before.
                 let recording = paused.fetch_xor(true, Ordering::Relaxed);
@@ -375,11 +372,11 @@ pub async fn run(
                 info!(recording, "pause toggled");
                 let _ = ipc::write_ack(&mut stream, ack).await;
             }
-            Command::Toggle => {
+            Command::Teleprompter(TeleprompterAction::Toggle) => {
                 let _ = ui_tx.send(UiEvent::Toggle);
                 let _ = ipc::write_ack(&mut stream, "toggled").await;
             }
-            Command::Stop => {
+            Command::Kitetsu(GlobalAction::Stop) => {
                 info!("stop received — shutting down");
                 let _ = ipc::write_ack(&mut stream, "stopping").await;
                 break;
@@ -545,20 +542,18 @@ fn log_summary(config: &Config, system_prompt: &str) {
         system_prompt_chars = system_prompt.len(),
         "config loaded",
     );
-    if config.live.enabled {
-        info!(
+    match config.pipe {
+        PipeKind::Live => info!(
             stt = %config.live.stt_model,
             llm_backend = ?config.live.llm_backend,
             llm = %config.live.llm_model,
-            "live pipe enabled",
-        );
-    }
-    if config.chunk.enabled {
-        info!(
+            "live pipe selected",
+        ),
+        PipeKind::Chunk => info!(
             stt = %config.chunk.stt_model,
             llm_backend = ?config.chunk.llm_backend,
             llm = %config.chunk.llm_model,
-            "chunk pipe enabled",
-        );
+            "chunk pipe selected",
+        ),
     }
 }

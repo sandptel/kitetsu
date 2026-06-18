@@ -32,7 +32,7 @@ use kitetsu::listener::{
 };
 use kitetsu::teleprompter::config::LlmBackendKind;
 use kitetsu::teleprompter::{
-    Backend, Config, History, Labels, PipeContext, Source, WindowManager, run_pipe1,
+    Backend, Config, History, Labels, PipeContext, PipeKind, Source, WindowManager, run_pipe1,
 };
 
 const REALTIME_ENDPOINT: &str = "wss://api.openai.com/v1/realtime?intent=transcription";
@@ -55,8 +55,8 @@ async fn main() -> anyhow::Result<()> {
         .load_system_prompt(base_dir)
         .context("loading prompt.md / context.md (copy the .example files)")?;
 
-    if !config.live.enabled {
-        anyhow::bail!("pipe1 is disabled in config.toml — enable [live] to run this example");
+    if config.pipe != PipeKind::Live {
+        anyhow::bail!("set `pipe = \"live\"` in teleprompter.toml to run this example");
     }
 
     // ── Keys + backend (same selection the daemon makes) ──────────────────────

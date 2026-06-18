@@ -1,10 +1,11 @@
-//! kitetsu teleprompter — thin binary entry point.
+//! kitetsu — thin binary entry point.
 //!
-//! `--daemon` runs the overlay on the main thread (iced owns it) and the
+//! `kitetsu daemon` runs the overlay on the main thread (iced owns it) and the
 //! audio/capture/pipe daemon on a background tokio runtime, bridged by an
-//! unbounded channel. `next`/`stop`/`ping` are short-lived clients that send one
-//! command to a running daemon over the control socket. All real logic lives in
-//! `kitetsu::teleprompter` (the lib) so it stays unit-testable.
+//! unbounded channel. `kitetsu ping`/`stop` and `kitetsu teleprompter <action>`
+//! are short-lived clients that send one command to a running daemon over the
+//! control socket. All real logic lives in `kitetsu::teleprompter` (the lib) so
+//! it stays unit-testable.
 
 use std::path::{Path, PathBuf};
 
@@ -14,40 +15,51 @@ use tokio::sync::mpsc;
 use tracing::info;
 
 use kitetsu::settings::{self, Settings};
-use kitetsu::teleprompter::{CardInit, Command, Config, PipeId, daemon, layout, send_command, ui};
+use kitetsu::teleprompter::{
+    CardInit, Command, Config, GlobalAction, PipeId, PipeKind, TeleprompterAction, daemon, layout,
+    send_command, ui,
+};
 
 /// Live teleprompter: listen to mic + system audio and suggest what to say.
 #[derive(Parser)]
-#[command(name = "kitetsu", about = "live teleprompter daemon + control CLI")]
+#[command(name = "kitetsu", about = "kitetsu supervisor + tool control CLI")]
 struct Cli {
-    /// Run the long-lived daemon (audio capture + pipes + control socket) plus overlay.
-    #[arg(long)]
-    daemon: bool,
-
-    /// Config directory (daemon only). Defaults to $XDG_CONFIG_HOME/kitetsu, else
-    /// ~/.config/kitetsu. Holds kitetsu.toml and teleprompter/.
-    #[arg(long)]
-    config_dir: Option<PathBuf>,
-
     #[command(subcommand)]
-    command: Option<ClientCommand>,
+    command: TopCommand,
 }
 
-/// Control commands sent to a running daemon.
+/// Top-level commands: run the daemon, supervisor globals, or a tool namespace.
 #[derive(Subcommand)]
-enum ClientCommand {
-    /// Trigger a window: dispatch the pipes on audio since the last trigger.
-    Next,
+enum TopCommand {
+    /// Run the long-lived daemon (supervisor + overlay) until stopped.
+    Daemon {
+        /// Config directory. Defaults to $XDG_CONFIG_HOME/kitetsu, else
+        /// ~/.config/kitetsu. Holds kitetsu.toml and teleprompter/.
+        #[arg(long)]
+        config_dir: Option<PathBuf>,
+    },
+    /// Health-check the running daemon.
+    Ping,
+    /// Ask the running daemon to shut down.
+    Stop,
+    /// Control the teleprompter tool.
+    Teleprompter {
+        #[command(subcommand)]
+        action: TeleprompterCli,
+    },
+}
+
+/// Teleprompter tool actions (routed to a running daemon).
+#[derive(Subcommand)]
+enum TeleprompterCli {
+    /// Process the window: dispatch the selected pipe on audio since the last trigger.
+    Process,
     /// Discard everything heard so far and start recording fresh.
     Trash,
     /// Pause/resume recording (the accumulated window is kept either way).
     Pause,
     /// Toggle overlay visibility (content + positions retained).
     Toggle,
-    /// Ask the running daemon to shut down.
-    Stop,
-    /// Health-check the running daemon.
-    Ping,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -60,29 +72,23 @@ fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
-    if cli.daemon {
-        return run_daemon(cli.config_dir.as_deref());
-    }
-
     let command = match cli.command {
-        Some(ClientCommand::Next) => Command::Next,
-        Some(ClientCommand::Trash) => Command::Trash,
-        Some(ClientCommand::Pause) => Command::Pause,
-        Some(ClientCommand::Toggle) => Command::Toggle,
-        Some(ClientCommand::Stop) => Command::Stop,
-        Some(ClientCommand::Ping) => Command::Ping,
-        None => {
-            anyhow::bail!(
-                "nothing to do: pass --daemon, or a command (next | trash | pause | toggle | stop | ping)"
-            );
-        }
+        TopCommand::Daemon { config_dir } => return run_daemon(config_dir.as_deref()),
+        TopCommand::Ping => Command::Kitetsu(GlobalAction::Ping),
+        TopCommand::Stop => Command::Kitetsu(GlobalAction::Stop),
+        TopCommand::Teleprompter { action } => Command::Teleprompter(match action {
+            TeleprompterCli::Process => TeleprompterAction::Process,
+            TeleprompterCli::Trash => TeleprompterAction::Trash,
+            TeleprompterCli::Pause => TeleprompterAction::Pause,
+            TeleprompterCli::Toggle => TeleprompterAction::Toggle,
+        }),
     };
 
     // Client commands need a runtime only to talk to the daemon over the socket.
     let rt = tokio::runtime::Runtime::new().context("building client runtime")?;
     let ack = rt
         .block_on(send_command(&command))
-        .context("could not reach the daemon — is `kitetsu --daemon` running?")?;
+        .context("could not reach the daemon — is `kitetsu daemon` running?")?;
     println!("{ack}");
     Ok(())
 }
@@ -156,38 +162,37 @@ fn run_daemon(override_dir: Option<&Path>) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Build overlay card specs for the enabled pipes (live / chunk).
+/// Build the overlay card spec for the selected pipe (exactly one).
 fn card_specs(config: &Config) -> Vec<CardInit> {
-    let mut cards = Vec::new();
-    if config.live.enabled {
-        let p = &config.live;
-        cards.push(CardInit {
-            id: PipeId::Pipe1,
-            model: format!("@ live · {}", p.llm_model),
-            font_size: p.font_size,
-            opacity: p.opacity,
-            bg_opacity: p.bg_opacity,
-            text_opacity: p.text_opacity,
-            width: p.width,
-            height: p.height,
-            pos_x: p.pos_x,
-            pos_y: p.pos_y,
-        });
-    }
-    if config.chunk.enabled {
-        let p = &config.chunk;
-        cards.push(CardInit {
-            id: PipeId::Pipe2,
-            model: format!("@ chunk · {}", p.llm_model),
-            font_size: p.font_size,
-            opacity: p.opacity,
-            bg_opacity: p.bg_opacity,
-            text_opacity: p.text_opacity,
-            width: p.width,
-            height: p.height,
-            pos_x: p.pos_x,
-            pos_y: p.pos_y,
-        });
-    }
-    cards
+    let (id, label, p): (PipeId, &str, &_) = match config.pipe {
+        PipeKind::Live => (PipeId::Pipe1, "live", &config.live),
+        // chunk's style fields live on a different type; handle it in its own arm.
+        PipeKind::Chunk => {
+            let p = &config.chunk;
+            return vec![CardInit {
+                id: PipeId::Pipe2,
+                model: format!("@ chunk · {}", p.llm_model),
+                font_size: p.font_size,
+                opacity: p.opacity,
+                bg_opacity: p.bg_opacity,
+                text_opacity: p.text_opacity,
+                width: p.width,
+                height: p.height,
+                pos_x: p.pos_x,
+                pos_y: p.pos_y,
+            }];
+        }
+    };
+    vec![CardInit {
+        id,
+        model: format!("@ {label} · {}", p.llm_model),
+        font_size: p.font_size,
+        opacity: p.opacity,
+        bg_opacity: p.bg_opacity,
+        text_opacity: p.text_opacity,
+        width: p.width,
+        height: p.height,
+        pos_x: p.pos_x,
+        pos_y: p.pos_y,
+    }]
 }

@@ -1,4 +1,4 @@
-//! Prototype launcher for the kitetsu DescriptionCard primitive.
+//! Prototype launcher for the kitetsu teleprompter preset.
 //! Spawns a single iced_layershell surface anchored top-left, renders one
 //! dummy card, and exits cleanly. No IPC, no LLM, no daemon — layout only.
 
@@ -8,13 +8,14 @@ use iced_layershell::reexport::{Anchor, KeyboardInteractivity};
 use iced_layershell::settings::{LayerShellSettings, Settings};
 use iced_layershell::to_layer_message;
 
-use kitetsu_primitives::card::{self, Card};
+use kitetsu_primitives::presets::teleprompter::{self, Card};
+use kitetsu_primitives::{FONT_BOLD, FONT_NAME, FONT_REGULAR};
 
 fn main() -> iced_layershell::Result {
     application(init, namespace, update, view)
-        .font(card::FONT_REGULAR)
-        .font(card::FONT_BOLD)
-        .default_font(Font::with_name(card::FONT_NAME))
+        .font(FONT_REGULAR)
+        .font(FONT_BOLD)
+        .default_font(Font::with_name(FONT_NAME))
         .settings(Settings {
             layer_settings: LayerShellSettings {
                 // Generous surface; the card shrinks to its content within this.
@@ -44,14 +45,14 @@ struct App {
 
 // ── Messages ──────────────────────────────────────────────────────────────────
 
-/// App messages. The card's own [`card::Message`] is mapped into `Card` here.
-/// #[to_layer_message] adds the LayerShell action variants required by the
+/// App messages. The preset's own [`teleprompter::Message`] is mapped into `Card`
+/// here. #[to_layer_message] adds the LayerShell action variants required by the
 /// iced_layershell TryInto<LayerShellCustomActionWithId> bound. See PLAN §4.1.
 #[to_layer_message]
 #[derive(Debug, Clone)]
 pub enum Message {
     /// A button on the card was pressed (drag handle only, for now).
-    Card(card::Message),
+    Card(teleprompter::Message),
 }
 
 // ── iced_layershell program functions ─────────────────────────────────────────
@@ -76,7 +77,7 @@ fn update(_app: &mut App, _msg: Message) -> Task<Message> {
     Task::none()
 }
 
-/// View — delegates to the card module, tagging its messages as `Message::Card`.
+/// View — delegates to the teleprompter preset, tagging its messages as `Message::Card`.
 fn view(app: &App) -> Element<'_, Message> {
-    card::view(&app.card).map(Message::Card)
+    teleprompter::view(&app.card).map(Message::Card)
 }

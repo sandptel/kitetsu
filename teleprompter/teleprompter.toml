@@ -7,6 +7,11 @@
 # edit them; `context.md` is gitignored (personal). Paths below resolve relative
 # to this file's directory.
 
+# Which pipe runs this session — exactly one. Switch and restart to change it.
+#   live  = Realtime WS transcript -> LLM (fastest)
+#   chunk = on-trigger REST re-transcribe -> LLM (slower, more accurate)
+pipe = "live"
+
 [prompts]
 prompt  = "prompt.md"    # instructions: how the LLM should respond
 context = "context.md"   # background: what the LLM should know about you
@@ -31,7 +36,6 @@ max_window_secs = 300      # safety cap: drop oldest audio past this if you neve
 
 # The `live` pipe — Realtime WS transcription -> LLM. Fastest; lands first.
 [live]
-enabled             = true
 stt_model           = "gpt-realtime-whisper"
 stt_language        = "en"
 commit_every_chunks = 8
@@ -48,7 +52,6 @@ pos_y               = 40.0
 
 # The `chunk` pipe — on-trigger REST chunk transcription -> LLM. Slower, more accurate.
 [chunk]
-enabled      = true
 stt_model    = "gpt-4o-transcribe"
 stt_language = "en"
 llm_backend  = "openai"

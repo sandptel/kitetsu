@@ -1,23 +1,15 @@
-//! Renders the DescriptionCard primitive — layout and styling only, no business logic.
-//! Deliberately does not know about IPC, sessions, or the agent loop.
-//! The Card struct holds the data; `view()` turns it into an iced Element.
+//! The teleprompter preset: a description card (logo + header + suggestion body)
+//! with overlay controls and resize chrome. Layout + styling only — no IPC,
+//! sessions, or agent loop. The [`Card`] struct holds the data; [`view`] turns it
+//! into an iced Element. Composes the shared [`crate::elements`].
 
 use iced::widget::text::Span;
-use iced::widget::{
-    column, container, mouse_area, rich_text, row, scrollable, space, span, svg, text,
-};
-use iced::{Alignment, Background, Border, Color, Element, Font, Length, Shadow, Vector, font};
+use iced::widget::{column, container, rich_text, row, scrollable, space, span, svg, text};
+use iced::{Alignment, Background, Border, Color, Element, Length, Shadow, Vector, font};
 
-/// Which grip the user grabbed to resize the card.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Edge {
-    /// Right edge — adjusts width only.
-    Right,
-    /// Bottom edge — adjusts height only.
-    Bottom,
-    /// Bottom-right corner — adjusts both.
-    Corner,
-}
+use crate::elements::button::icon_button;
+use crate::elements::chrome::{self, Edge};
+use crate::elements::typography::{DEFAULT_FONT_SIZE, jb};
 
 /// Card pointer interactions emitted to the host app. Drag/Resize drive in-app
 /// gestures; Toggle/Pause/Trash mirror the daemon control commands one-for-one
@@ -36,40 +28,17 @@ pub enum Message {
     Trash,
 }
 
-// Assets embedded at compile time — avoids runtime working-directory dependency.
+// Teleprompter-specific assets, embedded at compile time (no runtime cwd dependency).
 const LOGO_SVG: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/assets/logo-gemini.svg"
 ));
-const DRAG_SVG: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/drag.svg"));
 const TOGGLE_SVG: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/toggle.svg"));
 const RECORD_SVG: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/record.svg"));
 const RESUME_SVG: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/resume.svg"));
 const TRASH_SVG: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/trash.svg"));
 
-/// JetBrains Mono (Nerd Font build) — every card glyph renders in it. The bytes
-/// are registered by the host app (`run`); this is the family name to select.
-pub const FONT_NAME: &str = "JetBrainsMono Nerd Font";
-/// Regular + bold faces, exposed so the host can register them with iced once.
-pub const FONT_REGULAR: &[u8] =
-    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/JetBrainsMonoNerdFont-Regular.ttf"));
-pub const FONT_BOLD: &[u8] =
-    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/JetBrainsMonoNerdFont-Bold.ttf"));
-
-/// JetBrains Mono at the given weight. Explicit family on every text node because
-/// the iced default font wins only when no font is set, and the bold spans must
-/// still resolve to JetBrains Mono rather than the generic bold face.
-fn jb(weight: font::Weight) -> Font {
-    Font {
-        weight,
-        ..Font::with_name(FONT_NAME)
-    }
-}
-
-/// Base body font size used when a card does not override it (matches the mockup).
-pub const DEFAULT_FONT_SIZE: f32 = 19.0;
-
-/// All data needed to render one description card.
+/// All data needed to render one teleprompter card.
 pub struct Card {
     pub header: String,
     pub model: String,
@@ -139,9 +108,9 @@ impl Card {
     }
 }
 
-/// Render a DescriptionCard as an iced Element.
+/// Render the teleprompter card as an iced Element.
 ///
-/// Sizes scale off `card.font_size`; background, text, and the drag icon use the
+/// Sizes scale off `card.font_size`; background, text, and the icons use the
 /// card's resolved alphas so the whole card can be made see-through over the desktop.
 pub fn view(card: &Card) -> Element<'_, Message> {
     let text_alpha = card.text_alpha();
@@ -181,9 +150,6 @@ pub fn view(card: &Card) -> Element<'_, Message> {
         .align_y(Alignment::Center);
 
     // ── Right cluster: control icons + the drag handle ────────────────────────
-    // mouse_area (not button) so presses register immediately and the drag handle
-    // can grab on press-down. Toggle/Pause/Trash forward to the host, which fires
-    // the matching IPC command — the buttons do exactly what the CLI does.
     let toggle_btn = icon_button(TOGGLE_SVG, icon_alpha, Message::Toggle);
     let trash_btn = icon_button(TRASH_SVG, icon_alpha, Message::Trash);
 
@@ -197,16 +163,7 @@ pub fn view(card: &Card) -> Element<'_, Message> {
     };
     let pause_btn = icon_button(pause_icon, pause_alpha, Message::Pause);
 
-    let drag_handle = mouse_area(
-        container(
-            svg(svg::Handle::from_memory(DRAG_SVG))
-                .width(22)
-                .height(22)
-                .opacity(icon_alpha),
-        )
-        .padding(8),
-    )
-    .on_press(Message::Drag);
+    let drag_handle = chrome::drag_handle(icon_alpha, Message::Drag);
 
     // ── Top bar: left + flexible spacer + controls + drag handle ──────────────
     let controls = row![toggle_btn, pause_btn, trash_btn, drag_handle]
@@ -243,27 +200,9 @@ pub fn view(card: &Card) -> Element<'_, Message> {
         .height(Length::Fill);
 
     // ── Resize grips at the true edges (outside the inner padding) ─────────────
-    let right_grip = mouse_area(
-        container(space())
-            .width(Length::Fixed(GRIP))
-            .height(Length::Fill)
-            .style(grip_style),
-    )
-    .on_press(Message::Resize(Edge::Right));
-    let bottom_grip = mouse_area(
-        container(space())
-            .width(Length::Fill)
-            .height(Length::Fixed(GRIP))
-            .style(grip_style),
-    )
-    .on_press(Message::Resize(Edge::Bottom));
-    let corner_grip = mouse_area(
-        container(space())
-            .width(Length::Fixed(CORNER))
-            .height(Length::Fixed(CORNER))
-            .style(grip_style),
-    )
-    .on_press(Message::Resize(Edge::Corner));
+    let right_grip = chrome::right_grip(Message::Resize(Edge::Right));
+    let bottom_grip = chrome::bottom_grip(Message::Resize(Edge::Bottom));
+    let corner_grip = chrome::corner_grip(Message::Resize(Edge::Corner));
 
     // inner + right grip, then a bottom row with the bottom grip + corner.
     // `upper`/`card_col` fill so the bottom grips pin to the card's true bottom
@@ -295,31 +234,4 @@ pub fn view(card: &Card) -> Element<'_, Message> {
         None => card.height(Length::Shrink).max_height(max_height),
     }
     .into()
-}
-
-/// A small press-to-activate icon: an SVG at the given alpha that emits `msg`.
-fn icon_button<'a>(bytes: &'static [u8], alpha: f32, msg: Message) -> Element<'a, Message> {
-    mouse_area(
-        container(
-            svg(svg::Handle::from_memory(bytes))
-                .width(20)
-                .height(20)
-                .opacity(alpha),
-        )
-        .padding(6),
-    )
-    .on_press(msg)
-    .into()
-}
-
-/// Resize-grip thickness and corner size (px).
-const GRIP: f32 = 8.0;
-const CORNER: f32 = 16.0;
-
-/// Faint, semi-transparent fill so the resize grips are discoverable.
-fn grip_style(_theme: &iced::Theme) -> container::Style {
-    container::Style {
-        background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.10))),
-        ..container::Style::default()
-    }
 }
