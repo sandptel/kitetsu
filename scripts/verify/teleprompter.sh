@@ -42,6 +42,12 @@ step "backward past oldest / forward past newest are no-ops"
 echo "  EXPECT: stops at #1 going back, at #2 going forward — no blank card."
 pause
 
+step "colours come from colors.toml"
+echo "  Edit colors.toml (e.g. base00 = \"#3a1f1f\"), then restart the daemon."
+echo "  EXPECT: the card background follows base00; base05=text, base03=model line."
+echo "  Break/delete colors.toml and restart -> baked default palette, no crash."
+pause
+
 step "drag + resize persist"
 echo "  Drag the card and resize from the corner, then restart the daemon."
 echo "  EXPECT: it reopens at the moved/resized geometry (layout.toml)."

@@ -17,7 +17,7 @@ use tracing::info;
 use kitetsu::settings::{self, Settings};
 use kitetsu::teleprompter::{
     CardInit, Command, Config, GlobalAction, PipeKind, TeleprompterAction, daemon, layout,
-    send_command, ui,
+    send_command, theme, ui,
 };
 
 /// Live teleprompter: listen to mic + system audio and suggest what to say.
@@ -128,6 +128,7 @@ fn run_daemon(override_dir: Option<&Path>) -> anyhow::Result<()> {
     // Build the overlay card spec from config, then let any saved layout override
     // the geometry so the card reopens where the user last left it.
     let mut card = card_spec(&config);
+    let palette = theme::load(&config_dir);
     let layout_path = layout::layout_path();
     let saved = layout::load(&layout_path);
     if let Some(g) = saved.card {
@@ -158,7 +159,7 @@ fn run_daemon(override_dir: Option<&Path>) -> anyhow::Result<()> {
         .context("spawning daemon thread")?;
 
     // Run the overlay on the main thread; blocks until the surface closes.
-    ui::run(card, layout_path).map_err(|e| anyhow::anyhow!("overlay failed: {e}"))?;
+    ui::run(card, palette, layout_path).map_err(|e| anyhow::anyhow!("overlay failed: {e}"))?;
 
     // Overlay closed → the daemon thread winds down with the process.
     drop(daemon_thread);

@@ -8,8 +8,8 @@
 //! receiver is parked in a process static and taken once when the loop starts.
 //!
 //! The card keeps every reply it has shown; `forward`/`backward` walk that
-//! history, and a fresh reply snaps back to the newest. Not here: appearance is
-//! still hardcoded (theme is a later iteration).
+//! history, and a fresh reply snaps back to the newest. Colours come from a
+//! base16 [`Base16`] palette (loaded from `colors.toml`, baked default otherwise).
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -29,7 +29,7 @@ use iced_layershell::to_layer_message;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use kitetsu_primitives::presets::teleprompter::{self as card, Card};
-use kitetsu_primitives::{Edge, FONT_BOLD, FONT_NAME, FONT_REGULAR};
+use kitetsu_primitives::{Base16, Edge, FONT_BOLD, FONT_NAME, FONT_REGULAR};
 
 use super::ipc::{Command, TeleprompterAction, send_command};
 use super::layout::{self, Geometry, Layout};
@@ -122,6 +122,9 @@ static CARD_INIT: Mutex<Option<CardInit>> = Mutex::new(None);
 /// constraint: `init` cannot capture it).
 static LAYOUT_PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
 
+/// Process-wide parking spot for the colour palette (same `fn`-pointer constraint).
+static PALETTE: Mutex<Option<Base16>> = Mutex::new(None);
+
 /// What an in-progress pointer grab is doing to the card.
 #[derive(Clone, Copy)]
 enum GrabKind {
@@ -158,6 +161,8 @@ struct App {
     visible: bool,
     /// Where to persist card geometry; saved after each drag/resize.
     layout_path: PathBuf,
+    /// The base16 colour palette the card paints from.
+    palette: Base16,
 }
 
 impl App {
@@ -267,6 +272,11 @@ fn init() -> (App, Task<Message>) {
         .expect("layout path lock poisoned")
         .take()
         .unwrap_or_else(layout::layout_path);
+    let palette = PALETTE
+        .lock()
+        .expect("palette lock poisoned")
+        .take()
+        .unwrap_or(kitetsu_primitives::theme::DEFAULT);
 
     let card = Card {
         header: String::new(),
@@ -297,6 +307,7 @@ fn init() -> (App, Task<Message>) {
         surface: Size::new(f32::INFINITY, f32::INFINITY),
         visible: true,
         layout_path,
+        palette,
     };
     app.refresh_header();
     (app, Task::none())
@@ -446,7 +457,7 @@ fn view(app: &App) -> Element<'_, Message> {
         return Space::new().into();
     }
 
-    let positioned = card::view(&app.card).map(Message::Card);
+    let positioned = card::view(&app.card, &app.palette).map(Message::Card);
     container(positioned)
         .width(Length::Fill)
         .height(Length::Fill)
@@ -507,10 +518,11 @@ fn ui_event_stream() -> impl Stream<Item = Message> {
 
 /// Run the overlay on the current (main) thread. Blocks until the surface closes.
 ///
-/// `card` is the spec (built from config); it is parked for `init`.
-pub fn run(card: CardInit, layout_path: PathBuf) -> iced_layershell::Result {
+/// `card` is the spec (built from config); it and `palette` are parked for `init`.
+pub fn run(card: CardInit, palette: Base16, layout_path: PathBuf) -> iced_layershell::Result {
     *CARD_INIT.lock().expect("card init lock poisoned") = Some(card);
     *LAYOUT_PATH.lock().expect("layout path lock poisoned") = Some(layout_path);
+    *PALETTE.lock().expect("palette lock poisoned") = Some(palette);
     application(init, namespace, update, view)
         .subscription(subscription)
         // Register JetBrains Mono (regular + bold) and make it the default so

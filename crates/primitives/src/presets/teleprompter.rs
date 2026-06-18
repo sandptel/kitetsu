@@ -10,6 +10,7 @@ use iced::{Alignment, Background, Border, Color, Element, Length, Shadow, Vector
 use crate::elements::button::icon_button;
 use crate::elements::chrome::{self, Edge};
 use crate::elements::typography::{DEFAULT_FONT_SIZE, jb};
+use crate::theme::Base16;
 
 /// Card pointer interactions emitted to the host app. Drag/Resize drive in-app
 /// gestures; Toggle/Pause/Trash mirror the daemon control commands one-for-one
@@ -108,11 +109,17 @@ impl Card {
     }
 }
 
+/// A palette colour with its alpha replaced by `a` (for the card's opacity rules).
+fn with_alpha(c: Color, a: f32) -> Color {
+    Color { a, ..c }
+}
+
 /// Render the teleprompter card as an iced Element.
 ///
-/// Sizes scale off `card.font_size`; background, text, and the icons use the
-/// card's resolved alphas so the whole card can be made see-through over the desktop.
-pub fn view(card: &Card) -> Element<'_, Message> {
+/// Colours come from `palette` (a base16 scheme); sizes scale off
+/// `card.font_size`; background, text, and icons use the card's resolved alphas
+/// so the whole card can be made see-through over the desktop.
+pub fn view<'a>(card: &'a Card, palette: &Base16) -> Element<'a, Message> {
     let text_alpha = card.text_alpha();
     let bg_alpha = card.bg_alpha();
     let icon_alpha = card.opacity;
@@ -126,9 +133,10 @@ pub fn view(card: &Card) -> Element<'_, Message> {
     let manual_height = card.manual_height;
     let max_height = card.max_height;
 
-    // White text on the dark card; the model line is a lighter grey.
-    let text_color = Color::from_rgba(1.0, 1.0, 1.0, text_alpha);
-    let muted_color = Color::from_rgba(0.70, 0.72, 0.74, text_alpha);
+    // Body text in the palette's foreground; the model line is its muted tone.
+    let text_color = with_alpha(palette.text(), text_alpha);
+    let muted_color = with_alpha(palette.muted(), text_alpha);
+    let bg_color = with_alpha(palette.background(), bg_alpha);
 
     // ── Left cluster: logo + header column ───────────────────────────────────
     let logo = svg(svg::Handle::from_memory(LOGO_SVG)).width(52).height(52);
@@ -215,8 +223,8 @@ pub fn view(card: &Card) -> Element<'_, Message> {
     let card = container(card_col)
         .width(Length::Fixed(card.width))
         .style(move |_theme| container::Style {
-            // Dark grey card.
-            background: Some(Background::Color(Color::from_rgba(0.13, 0.13, 0.15, bg_alpha))),
+            // Card background from the palette.
+            background: Some(Background::Color(bg_color)),
             border: Border {
                 radius: 20.0.into(),
                 ..Border::default()

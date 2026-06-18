@@ -17,6 +17,7 @@ pub mod ipc;
 pub mod layout;
 pub mod llm;
 pub mod pipes;
+pub mod theme;
 pub mod ui;
 pub mod window;
 

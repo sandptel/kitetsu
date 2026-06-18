@@ -9,6 +9,7 @@ use iced_layershell::settings::{LayerShellSettings, Settings};
 use iced_layershell::to_layer_message;
 
 use kitetsu_primitives::presets::teleprompter::{self, Card};
+use kitetsu_primitives::theme::DEFAULT as DEFAULT_PALETTE;
 use kitetsu_primitives::{FONT_BOLD, FONT_NAME, FONT_REGULAR};
 
 fn main() -> iced_layershell::Result {
@@ -79,5 +80,5 @@ fn update(_app: &mut App, _msg: Message) -> Task<Message> {
 
 /// View — delegates to the teleprompter preset, tagging its messages as `Message::Card`.
 fn view(app: &App) -> Element<'_, Message> {
-    teleprompter::view(&app.card).map(Message::Card)
+    teleprompter::view(&app.card, &DEFAULT_PALETTE).map(Message::Card)
 }
