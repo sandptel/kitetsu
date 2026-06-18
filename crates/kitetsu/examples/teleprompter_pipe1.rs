@@ -47,7 +47,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     // ── Config + composed system prompt (prompt.md + context.md) ──────────────
-    let config_path = Path::new("config.toml");
+    let config_path = Path::new("teleprompter/teleprompter.toml");
     let config =
         Config::load(config_path).with_context(|| format!("loading {}", config_path.display()))?;
     let base_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
@@ -55,8 +55,8 @@ async fn main() -> anyhow::Result<()> {
         .load_system_prompt(base_dir)
         .context("loading prompt.md / context.md (copy the .example files)")?;
 
-    if !config.pipe1.enabled {
-        anyhow::bail!("pipe1 is disabled in config.toml — enable [pipe1] to run this example");
+    if !config.live.enabled {
+        anyhow::bail!("pipe1 is disabled in config.toml — enable [live] to run this example");
     }
 
     // ── Keys + backend (same selection the daemon makes) ──────────────────────
@@ -65,15 +65,15 @@ async fn main() -> anyhow::Result<()> {
     }
     let openai_key =
         require(OPENAI_API_KEY).context("OPENAI_API_KEY is needed for the Realtime WS")?;
-    let backend = match config.pipe1.llm_backend {
+    let backend = match config.live.llm_backend {
         LlmBackendKind::Openai => Backend::new(LlmBackendKind::Openai, openai_key.clone()),
         LlmBackendKind::Anthropic => Backend::new(
             LlmBackendKind::Anthropic,
-            require(ANTHROPIC_API_KEY).context("pipe1.llm_backend = anthropic needs the key")?,
+            require(ANTHROPIC_API_KEY).context("live.llm_backend = anthropic needs the key")?,
         ),
     }
     .context("building pipe1 LLM backend")?;
-    let model = config.pipe1.llm_model.clone();
+    let model = config.live.llm_model.clone();
     let history: History = Arc::new(Mutex::new(Vec::new()));
 
     let labels = Labels {
@@ -155,7 +155,7 @@ async fn main() -> anyhow::Result<()> {
 /// Print the model/config summary so you can confirm what will run before talking.
 fn print_banner(config: &Config, system_prompt: &str, mic_dev: &str, sys_dev: &str) {
     println!("\n┌─ teleprompter · pipe1 (live WS transcript → LLM) ───────────");
-    println!("│ config   {}", "config.toml");
+    println!("│ config   {}", "teleprompter/teleprompter.toml");
     println!(
         "│ prompt   {} chars (prompt.md + context.md)",
         system_prompt.len()
@@ -166,12 +166,12 @@ fn print_banner(config: &Config, system_prompt: &str, mic_dev: &str, sys_dev: &s
     );
     println!(
         "│ stt      {} (lang {})",
-        config.pipe1.stt_model,
-        config.pipe1.stt_language.as_deref().unwrap_or("auto")
+        config.live.stt_model,
+        config.live.stt_language.as_deref().unwrap_or("auto")
     );
     println!(
         "│ llm      {:?} / {}",
-        config.pipe1.llm_backend, config.pipe1.llm_model
+        config.live.llm_backend, config.live.llm_model
     );
     println!(
         "│ output   {}/pipe1.md ({:?})",
@@ -266,10 +266,10 @@ async fn spawn_source(
     let (handle, std_rx) = Recorder::new(device, label).start_streaming();
 
     let mut transcription = serde_json::json!({
-        "model": config.pipe1.stt_model,
+        "model": config.live.stt_model,
         "delay": "high",
     });
-    if let Some(lang) = &config.pipe1.stt_language {
+    if let Some(lang) = &config.live.stt_language {
         transcription["language"] = serde_json::Value::String(lang.clone());
     }
     let session_update = serde_json::json!({
@@ -288,7 +288,7 @@ async fn spawn_source(
     let (mut sink, mut events) = session.split();
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<f32>>();
-    let commit_every = config.pipe1.commit_every_chunks.max(1);
+    let commit_every = config.live.commit_every_chunks.max(1);
 
     // Feed task: bridged chunks → WS sink, commit periodically.
     tokio::spawn(async move {

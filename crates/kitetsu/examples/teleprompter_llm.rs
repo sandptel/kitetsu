@@ -30,7 +30,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     // ── Load config + the composed system prompt (prompt.md + context.md) ─────
-    let config_path = Path::new("config.toml");
+    let config_path = Path::new("teleprompter/teleprompter.toml");
     let config = Config::load(config_path)
         .with_context(|| format!("loading {}", config_path.display()))?;
     let base_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
@@ -47,7 +47,7 @@ async fn main() -> anyhow::Result<()> {
     if let Ok(cwd) = std::env::current_dir() {
         load_dotenv(&cwd.join(".env"));
     }
-    let backend_kind = config.pipe1.llm_backend;
+    let backend_kind = config.live.llm_backend;
     let key_name = match backend_kind {
         LlmBackendKind::Openai => OPENAI_API_KEY,
         LlmBackendKind::Anthropic => ANTHROPIC_API_KEY,
@@ -55,7 +55,7 @@ async fn main() -> anyhow::Result<()> {
     let api_key = require(key_name)
         .with_context(|| format!("set {key_name} in the environment or .env"))?;
     let backend = Backend::new(backend_kind, api_key).context("building LLM backend")?;
-    let model = &config.pipe1.llm_model;
+    let model = &config.live.llm_model;
 
     // ── Build a simulated transcript turn (the "them" side) ───────────────────
     let them = {

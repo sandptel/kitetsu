@@ -1,9 +1,9 @@
 //! Typed teleprompter configuration loaded from `config.toml`.
 //!
 //! [`Config`] mirrors the on-disk schema: `[output]`, `[prompts]`, `[audio]`,
-//! and one section per pipe (`[pipe1]`/`[pipe2]`/`[pipe3]`). Every field has a
-//! default so a minimal file works; [`Config::validate`] rejects nonsensical
-//! combinations (enabled pipe with a blank model, zero window cap, …).
+//! and one section per pipe (`[live]`/`[chunk]`). Every field has a default so a
+//! minimal file works; [`Config::validate`] rejects nonsensical combinations
+//! (enabled pipe with a blank model, zero window cap, …).
 //! Not here: capture, HTTP, or the actual LLM backends — only parsing + checks.
 
 use std::path::{Path, PathBuf};
@@ -125,13 +125,13 @@ impl Default for AudioConfig {
     }
 }
 
-/// Pipe 1 — live (Realtime WS) transcription → LLM. Fastest path.
+/// The `live` pipe — Realtime WS transcription → LLM. Fastest path.
 ///
 /// The `font_size`/`opacity`/`pos_*` keys style and place this pipe's overlay
 /// card; `bg_opacity`/`text_opacity` are `None` → inherit `opacity`.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct Pipe1Config {
+pub struct LiveConfig {
     pub enabled: bool,
     /// Realtime transcription model.
     pub stt_model: String,
@@ -151,7 +151,7 @@ pub struct Pipe1Config {
     pub pos_y: f32,
 }
 
-impl Default for Pipe1Config {
+impl Default for LiveConfig {
     fn default() -> Self {
         Self {
             enabled: true,
@@ -172,10 +172,10 @@ impl Default for Pipe1Config {
     }
 }
 
-/// Pipe 2 — on-trigger REST chunk transcription → LLM. Slower, more accurate.
+/// The `chunk` pipe — on-trigger REST chunk transcription → LLM. Slower, more accurate.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct Pipe2Config {
+pub struct ChunkConfig {
     pub enabled: bool,
     /// REST transcription model.
     pub stt_model: String,
@@ -193,7 +193,7 @@ pub struct Pipe2Config {
     pub pos_y: f32,
 }
 
-impl Default for Pipe2Config {
+impl Default for ChunkConfig {
     fn default() -> Self {
         Self {
             enabled: true,
@@ -213,25 +213,6 @@ impl Default for Pipe2Config {
     }
 }
 
-/// Pipe 3 — raw audio sent directly to an audio-capable LLM (OpenAI only).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Pipe3Config {
-    pub enabled: bool,
-    pub llm_backend: LlmBackendKind,
-    pub llm_model: String,
-}
-
-impl Default for Pipe3Config {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            llm_backend: LlmBackendKind::Openai,
-            llm_model: "gpt-4o-audio-preview".to_owned(),
-        }
-    }
-}
-
 /// The full teleprompter configuration.
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -239,9 +220,8 @@ pub struct Config {
     pub output: OutputConfig,
     pub prompts: PromptsConfig,
     pub audio: AudioConfig,
-    pub pipe1: Pipe1Config,
-    pub pipe2: Pipe2Config,
-    pub pipe3: Pipe3Config,
+    pub live: LiveConfig,
+    pub chunk: ChunkConfig,
 }
 
 impl Config {
@@ -271,44 +251,36 @@ impl Config {
                 "at least one of audio.mic / audio.system must be enabled".to_owned(),
             ));
         }
-        if self.pipe1.enabled {
-            require_nonblank("pipe1.stt_model", &self.pipe1.stt_model)?;
-            require_nonblank("pipe1.llm_model", &self.pipe1.llm_model)?;
-            if self.pipe1.commit_every_chunks == 0 {
+        if self.live.enabled {
+            require_nonblank("live.stt_model", &self.live.stt_model)?;
+            require_nonblank("live.llm_model", &self.live.llm_model)?;
+            if self.live.commit_every_chunks == 0 {
                 return Err(ConfigError::Invalid(
-                    "pipe1.commit_every_chunks must be greater than 0".to_owned(),
+                    "live.commit_every_chunks must be greater than 0".to_owned(),
                 ));
             }
             require_card_style(
-                "pipe1",
-                self.pipe1.font_size,
-                self.pipe1.width,
-                self.pipe1.height,
-                self.pipe1.opacity,
-                self.pipe1.bg_opacity,
-                self.pipe1.text_opacity,
+                "live",
+                self.live.font_size,
+                self.live.width,
+                self.live.height,
+                self.live.opacity,
+                self.live.bg_opacity,
+                self.live.text_opacity,
             )?;
         }
-        if self.pipe2.enabled {
-            require_nonblank("pipe2.stt_model", &self.pipe2.stt_model)?;
-            require_nonblank("pipe2.llm_model", &self.pipe2.llm_model)?;
+        if self.chunk.enabled {
+            require_nonblank("chunk.stt_model", &self.chunk.stt_model)?;
+            require_nonblank("chunk.llm_model", &self.chunk.llm_model)?;
             require_card_style(
-                "pipe2",
-                self.pipe2.font_size,
-                self.pipe2.width,
-                self.pipe2.height,
-                self.pipe2.opacity,
-                self.pipe2.bg_opacity,
-                self.pipe2.text_opacity,
+                "chunk",
+                self.chunk.font_size,
+                self.chunk.width,
+                self.chunk.height,
+                self.chunk.opacity,
+                self.chunk.bg_opacity,
+                self.chunk.text_opacity,
             )?;
-        }
-        if self.pipe3.enabled {
-            require_nonblank("pipe3.llm_model", &self.pipe3.llm_model)?;
-            if self.pipe3.llm_backend != LlmBackendKind::Openai {
-                return Err(ConfigError::Invalid(
-                    "pipe3 (audio-direct) supports only llm_backend = \"openai\"".to_owned(),
-                ));
-            }
         }
         Ok(())
     }
@@ -401,7 +373,7 @@ mod tests {
         assert!(cfg.validate().is_ok());
         assert_eq!(cfg.audio.max_window_secs, 300);
         assert_eq!(cfg.output.mode, OutputMode::Append);
-        assert_eq!(cfg.pipe3.llm_model, "gpt-4o-audio-preview");
+        assert_eq!(cfg.chunk.stt_model, "gpt-4o-transcribe");
     }
 
     #[test]
@@ -419,30 +391,26 @@ mod tests {
             mic_label = "I"
             system_label = "They"
             max_window_secs = 120
-            [pipe1]
+            [live]
             enabled = true
             stt_model = "gpt-realtime-whisper"
             stt_language = "en"
             commit_every_chunks = 4
             llm_backend = "anthropic"
             llm_model = "claude-opus-4-8"
-            [pipe2]
+            [chunk]
             enabled = false
             stt_model = "whisper-1"
             llm_backend = "openai"
             llm_model = "gpt-4o-mini"
-            [pipe3]
-            enabled = true
-            llm_backend = "openai"
-            llm_model = "gpt-4o-audio-preview"
         "#;
         let cfg = toml::from_str::<Config>(toml).expect("parses");
         cfg.validate().expect("valid");
         assert_eq!(cfg.output.mode, OutputMode::Overwrite);
         assert!(!cfg.audio.system);
-        assert_eq!(cfg.pipe1.llm_backend, LlmBackendKind::Anthropic);
-        assert_eq!(cfg.pipe1.commit_every_chunks, 4);
-        assert!(!cfg.pipe2.enabled);
+        assert_eq!(cfg.live.llm_backend, LlmBackendKind::Anthropic);
+        assert_eq!(cfg.live.commit_every_chunks, 4);
+        assert!(!cfg.chunk.enabled);
     }
 
     #[test]
@@ -465,47 +433,41 @@ mod tests {
 
     #[test]
     fn enabled_pipe_with_blank_model_is_invalid() {
-        let cfg = toml::from_str::<Config>("[pipe1]\nllm_model = \"  \"\n").unwrap();
-        assert!(matches!(cfg.validate(), Err(ConfigError::Invalid(_))));
-    }
-
-    #[test]
-    fn pipe3_non_openai_backend_is_invalid() {
-        let cfg = toml::from_str::<Config>("[pipe3]\nllm_backend = \"anthropic\"\n").unwrap();
+        let cfg = toml::from_str::<Config>("[live]\nllm_model = \"  \"\n").unwrap();
         assert!(matches!(cfg.validate(), Err(ConfigError::Invalid(_))));
     }
 
     #[test]
     fn disabled_pipe_skips_model_validation() {
         let cfg =
-            toml::from_str::<Config>("[pipe1]\nenabled = false\nllm_model = \"\"\n").unwrap();
+            toml::from_str::<Config>("[live]\nenabled = false\nllm_model = \"\"\n").unwrap();
         assert!(cfg.validate().is_ok());
     }
 
     #[test]
     fn parses_card_style_keys() {
         let cfg = toml::from_str::<Config>(
-            "[pipe1]\nfont_size = 26.0\nopacity = 0.8\nbg_opacity = 0.5\npos_x = 100.0\npos_y = 200.0\n",
+            "[live]\nfont_size = 26.0\nopacity = 0.8\nbg_opacity = 0.5\npos_x = 100.0\npos_y = 200.0\n",
         )
         .unwrap();
         cfg.validate().expect("valid");
-        assert_eq!(cfg.pipe1.font_size, 26.0);
-        assert_eq!(cfg.pipe1.opacity, 0.8);
-        assert_eq!(cfg.pipe1.bg_opacity, Some(0.5));
-        assert_eq!(cfg.pipe1.text_opacity, None);
-        assert_eq!(cfg.pipe1.pos_x, 100.0);
-        assert_eq!(cfg.pipe1.pos_y, 200.0);
+        assert_eq!(cfg.live.font_size, 26.0);
+        assert_eq!(cfg.live.opacity, 0.8);
+        assert_eq!(cfg.live.bg_opacity, Some(0.5));
+        assert_eq!(cfg.live.text_opacity, None);
+        assert_eq!(cfg.live.pos_x, 100.0);
+        assert_eq!(cfg.live.pos_y, 200.0);
     }
 
     #[test]
     fn out_of_range_opacity_is_invalid() {
-        let cfg = toml::from_str::<Config>("[pipe2]\nopacity = 1.5\n").unwrap();
+        let cfg = toml::from_str::<Config>("[chunk]\nopacity = 1.5\n").unwrap();
         assert!(matches!(cfg.validate(), Err(ConfigError::Invalid(_))));
     }
 
     #[test]
     fn nonpositive_font_size_is_invalid() {
-        let cfg = toml::from_str::<Config>("[pipe1]\nfont_size = 0.0\n").unwrap();
+        let cfg = toml::from_str::<Config>("[live]\nfont_size = 0.0\n").unwrap();
         assert!(matches!(cfg.validate(), Err(ConfigError::Invalid(_))));
     }
 }

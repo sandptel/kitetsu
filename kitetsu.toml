@@ -1,0 +1,9 @@
+# kitetsu — central tool registry (debug config; §10 CLAUDE.md).
+#
+# Each [<tool>] section toggles a tool on/off. A tool's own config + prompt/
+# context files live in <config_dir>/<tool>/ (e.g. teleprompter/teleprompter.toml).
+# Config dir resolves to $XDG_CONFIG_HOME/kitetsu, else ~/.config/kitetsu, or
+# pass `kitetsu --daemon --config-dir <path>` (dev: --config-dir . from repo root).
+
+[teleprompter]
+enabled = true

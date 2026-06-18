@@ -23,7 +23,7 @@ use crate::listener::{
 
 use tokio::sync::mpsc::UnboundedSender;
 
-use super::config::{Config, LlmBackendKind, OutputMode, Pipe1Config};
+use super::config::{Config, LiveConfig, LlmBackendKind, OutputMode};
 use super::ipc::{self, Command, IpcError};
 use super::llm::{Backend, LlmError};
 use super::pipes::{History, Labels, PipeContext, run_pipe1, run_pipe2};
@@ -100,13 +100,13 @@ pub async fn run(
     if let Ok(cwd) = std::env::current_dir() {
         load_dotenv(&cwd.join(".env"));
     }
-    let openai_key = if config.pipe1.enabled || config.pipe2.enabled {
+    let openai_key = if config.live.enabled || config.chunk.enabled {
         Some(require(OPENAI_API_KEY).map_err(DaemonError::Key)?)
     } else {
         None
     };
-    // Only pipe1 opens the realtime WS; pipe2 only needs the key for REST.
-    let ws_key = if config.pipe1.enabled {
+    // Only the live pipe opens the realtime WS; chunk only needs the key for REST.
+    let ws_key = if config.live.enabled {
         openai_key.as_deref()
     } else {
         None
@@ -144,7 +144,7 @@ pub async fn run(
             Arc::clone(&windows),
             Arc::clone(&paused),
             ws_key,
-            &config.pipe1,
+            &config.live,
             &mut tasks,
         )
         .await?;
@@ -165,7 +165,7 @@ pub async fn run(
             Arc::clone(&windows),
             Arc::clone(&paused),
             ws_key,
-            &config.pipe1,
+            &config.live,
             &mut tasks,
         )
         .await?;
@@ -181,14 +181,14 @@ pub async fn run(
 
     // Build the pipe-1 runtime once (its LLM key may differ from the OpenAI key
     // when the configured llm_backend is anthropic).
-    let pipe1_rt = if config.pipe1.enabled {
+    let pipe1_rt = if config.live.enabled {
         let backend = build_backend(
-            config.pipe1.llm_backend,
+            config.live.llm_backend,
             openai_key.as_deref(),
         )?;
         Some(Pipe1Runtime {
             backend: Arc::new(backend),
-            model: config.pipe1.llm_model.clone(),
+            model: config.live.llm_model.clone(),
             system_prompt: Arc::clone(&system_prompt),
             labels: Arc::clone(&labels),
             history: Arc::new(Mutex::new(Vec::new())),
@@ -200,24 +200,24 @@ pub async fn run(
     };
 
     // Build the pipe-2 runtime: a REST transcriber (OpenAI) plus its LLM backend.
-    let pipe2_rt = if config.pipe2.enabled {
+    let pipe2_rt = if config.chunk.enabled {
         let key = openai_key
             .clone()
-            .expect("OpenAI key loaded when pipe2 is enabled");
+            .expect("OpenAI key loaded when chunk is enabled");
         let transcriber = ApiTranscriber::new(
             key,
             ApiConfig {
-                model: config.pipe2.stt_model.clone(),
-                language: config.pipe2.stt_language.clone(),
+                model: config.chunk.stt_model.clone(),
+                language: config.chunk.stt_language.clone(),
                 ..ApiConfig::default()
             },
         )
         .map_err(|_| DaemonError::Key(KeyError::Missing(OPENAI_API_KEY)))?;
-        let backend = build_backend(config.pipe2.llm_backend, openai_key.as_deref())?;
+        let backend = build_backend(config.chunk.llm_backend, openai_key.as_deref())?;
         Some(Pipe2Runtime {
             transcriber: Arc::new(transcriber),
             backend: Arc::new(backend),
-            model: config.pipe2.llm_model.clone(),
+            model: config.chunk.llm_model.clone(),
             system_prompt: Arc::clone(&system_prompt),
             labels: Arc::clone(&labels),
             history: Arc::new(Mutex::new(Vec::new())),
@@ -427,20 +427,20 @@ async fn spawn_source(
     windows: Arc<Mutex<WindowManager>>,
     paused: Arc<AtomicBool>,
     api_key: Option<&str>,
-    pipe1: &Pipe1Config,
+    live: &LiveConfig,
     tasks: &mut Vec<tokio::task::JoinHandle<()>>,
 ) -> Result<RecordingHandle, DaemonError> {
     let (handle, std_rx) = Recorder::new(device, label).start_streaming();
 
     // Optional live WS path: a sender that the capture bridge forwards chunks to.
     let ws_tx = if let Some(key) = api_key {
-        let session_update = build_session_update(pipe1);
+        let session_update = build_session_update(live);
         let session = RealtimeSession::connect(key, REALTIME_ENDPOINT, &session_update)
             .await
             .map_err(DaemonError::Realtime)?;
         let (mut sink, mut event_stream) = session.split();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<f32>>();
-        let commit_every = pipe1.commit_every_chunks.max(1);
+        let commit_every = live.commit_every_chunks.max(1);
 
         // Feed task: pull bridged chunks → WS sink, committing periodically
         // (gpt-realtime-whisper has no server VAD).
@@ -509,17 +509,17 @@ async fn spawn_source(
     Ok(handle)
 }
 
-/// Build the Realtime `session.update` JSON for pipe1 from its config.
+/// Build the Realtime `session.update` JSON for the live pipe from its config.
 ///
 /// `gpt-realtime-whisper` requires PCM input and manual commits (no server VAD),
 /// so `turn_detection` is omitted; the sink resamples 16 kHz capture to the 24
 /// kHz the API expects.
-fn build_session_update(pipe1: &Pipe1Config) -> serde_json::Value {
+fn build_session_update(live: &LiveConfig) -> serde_json::Value {
     let mut transcription = serde_json::json!({
-        "model": pipe1.stt_model,
+        "model": live.stt_model,
         "delay": "high",
     });
-    if let Some(lang) = &pipe1.stt_language {
+    if let Some(lang) = &live.stt_language {
         transcription["language"] = serde_json::Value::String(lang.clone());
     }
     serde_json::json!({
@@ -560,27 +560,20 @@ fn log_summary(config: &Config, system_prompt: &str) {
         system_prompt_chars = system_prompt.len(),
         "config loaded",
     );
-    if config.pipe1.enabled {
+    if config.live.enabled {
         info!(
-            stt = %config.pipe1.stt_model,
-            llm_backend = ?config.pipe1.llm_backend,
-            llm = %config.pipe1.llm_model,
-            "pipe1 (live) enabled",
+            stt = %config.live.stt_model,
+            llm_backend = ?config.live.llm_backend,
+            llm = %config.live.llm_model,
+            "live pipe enabled",
         );
     }
-    if config.pipe2.enabled {
+    if config.chunk.enabled {
         info!(
-            stt = %config.pipe2.stt_model,
-            llm_backend = ?config.pipe2.llm_backend,
-            llm = %config.pipe2.llm_model,
-            "pipe2 (chunk) enabled",
-        );
-    }
-    if config.pipe3.enabled {
-        info!(
-            llm_backend = ?config.pipe3.llm_backend,
-            llm = %config.pipe3.llm_model,
-            "pipe3 (audio) enabled",
+            stt = %config.chunk.stt_model,
+            llm_backend = ?config.chunk.llm_backend,
+            llm = %config.chunk.llm_model,
+            "chunk pipe enabled",
         );
     }
 }

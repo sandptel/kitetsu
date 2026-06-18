@@ -6,12 +6,14 @@
 //! command to a running daemon over the control socket. All real logic lives in
 //! `kitetsu::teleprompter` (the lib) so it stays unit-testable.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
 use clap::{Parser, Subcommand};
 use tokio::sync::mpsc;
+use tracing::info;
 
+use kitetsu::settings::{self, Settings};
 use kitetsu::teleprompter::{CardInit, Command, Config, PipeId, daemon, layout, send_command, ui};
 
 /// Live teleprompter: listen to mic + system audio and suggest what to say.
@@ -22,9 +24,10 @@ struct Cli {
     #[arg(long)]
     daemon: bool,
 
-    /// Path to the TOML config (daemon only).
-    #[arg(long, default_value = "config.toml")]
-    config: PathBuf,
+    /// Config directory (daemon only). Defaults to $XDG_CONFIG_HOME/kitetsu, else
+    /// ~/.config/kitetsu. Holds kitetsu.toml and teleprompter/.
+    #[arg(long)]
+    config_dir: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Option<ClientCommand>,
@@ -58,7 +61,7 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     if cli.daemon {
-        return run_daemon(&cli.config);
+        return run_daemon(cli.config_dir.as_deref());
     }
 
     let command = match cli.command {
@@ -85,12 +88,29 @@ fn main() -> anyhow::Result<()> {
 }
 
 /// Launch the daemon (background tokio runtime) and the overlay (this thread).
-fn run_daemon(config_path: &std::path::Path) -> anyhow::Result<()> {
-    let config = Config::load(config_path)
+///
+/// Resolves the config dir, reads the central `kitetsu.toml` registry, and only
+/// starts the teleprompter when it is enabled there. The tool's own config and
+/// prompt/context files live in `<config_dir>/teleprompter/`.
+fn run_daemon(override_dir: Option<&Path>) -> anyhow::Result<()> {
+    let config_dir = settings::config_dir(override_dir);
+    let settings = Settings::load(&config_dir)
+        .with_context(|| format!("loading central config from {}", config_dir.display()))?;
+
+    if !settings.teleprompter.enabled {
+        info!(
+            config_dir = %config_dir.display(),
+            "teleprompter disabled in kitetsu.toml — nothing to run",
+        );
+        return Ok(());
+    }
+
+    let tool_dir = config_dir.join("teleprompter");
+    let config_path = tool_dir.join("teleprompter.toml");
+    let config = Config::load(&config_path)
         .with_context(|| format!("loading config from {}", config_path.display()))?;
-    let base_dir = config_path.parent().unwrap_or_else(|| std::path::Path::new("."));
     let system_prompt = config
-        .load_system_prompt(base_dir)
+        .load_system_prompt(&tool_dir)
         .context("loading prompt.md / context.md")?;
 
     // Build the overlay card specs from config (only enabled pipes get a card),
@@ -136,14 +156,14 @@ fn run_daemon(config_path: &std::path::Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Build overlay card specs for the enabled pipes (pipe1 / pipe2 only).
+/// Build overlay card specs for the enabled pipes (live / chunk).
 fn card_specs(config: &Config) -> Vec<CardInit> {
     let mut cards = Vec::new();
-    if config.pipe1.enabled {
-        let p = &config.pipe1;
+    if config.live.enabled {
+        let p = &config.live;
         cards.push(CardInit {
             id: PipeId::Pipe1,
-            model: format!("@ pipe1 · {}", p.llm_model),
+            model: format!("@ live · {}", p.llm_model),
             font_size: p.font_size,
             opacity: p.opacity,
             bg_opacity: p.bg_opacity,
@@ -154,11 +174,11 @@ fn card_specs(config: &Config) -> Vec<CardInit> {
             pos_y: p.pos_y,
         });
     }
-    if config.pipe2.enabled {
-        let p = &config.pipe2;
+    if config.chunk.enabled {
+        let p = &config.chunk;
         cards.push(CardInit {
             id: PipeId::Pipe2,
-            model: format!("@ pipe2 · {}", p.llm_model),
+            model: format!("@ chunk · {}", p.llm_model),
             font_size: p.font_size,
             opacity: p.opacity,
             bg_opacity: p.bg_opacity,

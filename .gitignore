@@ -7,6 +7,6 @@ system.wav
 # API keys — never committed (§10 CLAUDE.md)
 .env
 # Teleprompter: personal context + generated pipe output — never committed
-context.md
-prompt.md
+teleprompter/context.md
+teleprompter/prompt.md
 /out

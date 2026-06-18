@@ -45,7 +45,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     // ── Config + composed system prompt (prompt.md + context.md) ──────────────
-    let config_path = Path::new("config.toml");
+    let config_path = Path::new("teleprompter/teleprompter.toml");
     let config =
         Config::load(config_path).with_context(|| format!("loading {}", config_path.display()))?;
     let base_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
@@ -53,8 +53,8 @@ async fn main() -> anyhow::Result<()> {
         .load_system_prompt(base_dir)
         .context("loading prompt.md / context.md (copy the .example files)")?;
 
-    if !config.pipe2.enabled {
-        anyhow::bail!("pipe2 is disabled in config.toml — enable [pipe2] to run this example");
+    if !config.chunk.enabled {
+        anyhow::bail!("pipe2 is disabled in config.toml — enable [chunk] to run this example");
     }
 
     // ── Keys + backend + REST transcriber (same the daemon builds) ────────────
@@ -63,21 +63,21 @@ async fn main() -> anyhow::Result<()> {
     }
     let openai_key =
         require(OPENAI_API_KEY).context("OPENAI_API_KEY is needed for REST transcription")?;
-    let backend = match config.pipe2.llm_backend {
+    let backend = match config.chunk.llm_backend {
         LlmBackendKind::Openai => Backend::new(LlmBackendKind::Openai, openai_key.clone()),
         LlmBackendKind::Anthropic => Backend::new(
             LlmBackendKind::Anthropic,
-            require(ANTHROPIC_API_KEY).context("pipe2.llm_backend = anthropic needs the key")?,
+            require(ANTHROPIC_API_KEY).context("chunk.llm_backend = anthropic needs the key")?,
         ),
     }
     .context("building pipe2 LLM backend")?;
-    let model = config.pipe2.llm_model.clone();
+    let model = config.chunk.llm_model.clone();
     let history: History = Arc::new(Mutex::new(Vec::new()));
     let transcriber = ApiTranscriber::new(
         openai_key,
         ApiConfig {
-            model: config.pipe2.stt_model.clone(),
-            language: config.pipe2.stt_language.clone(),
+            model: config.chunk.stt_model.clone(),
+            language: config.chunk.stt_language.clone(),
             ..ApiConfig::default()
         },
     )
@@ -163,7 +163,7 @@ async fn main() -> anyhow::Result<()> {
 /// Print the model/config summary so you can confirm what will run before talking.
 fn print_banner(config: &Config, system_prompt: &str, mic_dev: &str, sys_dev: &str) {
     println!("\n┌─ teleprompter · pipe2 (on-trigger REST transcribe → LLM) ───");
-    println!("│ config   {}", "config.toml");
+    println!("│ config   {}", "teleprompter/teleprompter.toml");
     println!(
         "│ prompt   {} chars (prompt.md + context.md)",
         system_prompt.len()
@@ -174,12 +174,12 @@ fn print_banner(config: &Config, system_prompt: &str, mic_dev: &str, sys_dev: &s
     );
     println!(
         "│ stt      {} (lang {})",
-        config.pipe2.stt_model,
-        config.pipe2.stt_language.as_deref().unwrap_or("auto")
+        config.chunk.stt_model,
+        config.chunk.stt_language.as_deref().unwrap_or("auto")
     );
     println!(
         "│ llm      {:?} / {}",
-        config.pipe2.llm_backend, config.pipe2.llm_model
+        config.chunk.llm_backend, config.chunk.llm_model
     );
     println!(
         "│ output   {}/pipe2.md ({:?})",
