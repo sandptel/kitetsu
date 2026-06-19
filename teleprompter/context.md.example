@@ -1,0 +1,11 @@
+# Context about me
+
+<!-- Personal background the assistant should use when suggesting replies.
+     Copy this file to context.md (gitignored) and fill it in. -->
+
+- Name:
+- Role / what I do:
+- Today's goal in this conversation:
+- Tone I want to project (e.g. warm, concise, technical):
+- Facts the assistant may rely on:
+- Things to avoid saying:

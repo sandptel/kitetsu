@@ -1,0 +1,71 @@
+# kitetsu teleprompter configuration.
+#
+# API keys are NOT here — set OPENAI_API_KEY (and ANTHROPIC_API_KEY if any pipe
+# uses the anthropic backend) in `.env` or the shell environment.
+#
+# Copy prompt.md.example -> prompt.md and context.md.example -> context.md and
+# edit them; `context.md` is gitignored (personal). Paths below resolve relative
+# to this file's directory.
+
+# Which pipe runs this session — exactly one. Switch and restart to change it.
+#   live  = Realtime WS transcript -> LLM (fastest)
+#   chunk = on-trigger REST re-transcribe -> LLM (slower, more accurate)
+pipe = "live"
+
+[prompts]
+prompt  = "prompt.md"    # instructions: how the LLM should respond
+context = "context.md"   # background: what the LLM should know about you
+
+[audio]
+mic             = true
+system          = true
+mic_label       = "Me"     # how your speech is labelled to the LLM
+system_label    = "Them"   # how the other party's speech is labelled
+max_window_secs = 300      # safety cap: drop oldest audio past this if you never trigger
+# mic_source    = "..."    # optional explicit PulseAudio source; omit to auto-discover
+# system_source = "..."
+
+# The single overlay card, shared by whichever pipe runs (all keys optional):
+#   font_size    body text size (px); header/model scale from it
+#   opacity      master alpha 0.0–1.0 (icons use this; bg/text inherit unless set)
+#   bg_opacity   optional: override the card background alpha
+#   text_opacity optional: override the text alpha
+#   width        fixed card width (px); content wraps to it
+#   height       initial card height (px); resize from the edges, long text scrolls
+#   pos_x/pos_y  initial top-left offset (px) of the card on screen
+# Drag/resize at runtime is remembered and overrides these on next launch.
+[card]
+font_size      = 19.0
+opacity        = 1.0
+# bg_opacity   = 0.85
+# text_opacity = 1.0
+width          = 600.0
+height         = 400.0
+pos_x          = 40.0
+pos_y          = 40.0
+
+# The `live` pipe — Realtime WS transcription -> LLM. Fastest; lands first.
+#   stt_model     Realtime-API transcription model (WebSocket). Use a realtime
+#                 model here, e.g. "gpt-realtime-whisper". A REST-only model
+#                 will not stream.
+#   commit_every_chunks  how many audio chunks before a partial is committed.
+#   llm_model     chat model for the reply (see [chunk] for valid values).
+[live]
+stt_model           = "gpt-realtime-whisper"
+stt_language        = "en"
+commit_every_chunks = 8
+llm_backend         = "openai"   # openai | anthropic
+llm_model           = "gpt-5.5"
+
+# The `chunk` pipe — on-trigger REST chunk transcription -> LLM. Slower, more accurate.
+#   stt_model     REST /v1/audio/transcriptions model. Use "gpt-4o-transcribe",
+#                 "gpt-4o-mini-transcribe", or "whisper-1". NOT a realtime-only
+#                 model like "gpt-realtime-whisper" — that 404s on this endpoint.
+#   llm_backend   openai | anthropic
+#   llm_model     chat model: openai e.g. "gpt-5.5" / "gpt-4o"; anthropic e.g.
+#                 "claude-…" (must match llm_backend).
+[chunk]
+stt_model    = "gpt-4o-transcribe"
+stt_language = "en"
+llm_backend  = "openai"
+llm_model    = "gpt-5.5"

@@ -27,6 +27,19 @@ api = [
     "dep:futures-util",
     "dep:base64",
 ]
+# Experimental live teleprompter binary (separate-branch work). Builds on the
+# `api` stack (capture + REST/Realtime STT + LLM HTTP) and adds the CLI/daemon
+# control plane, TOML config, and binary-edge deps (clap/anyhow/tracing-subscriber).
+teleprompter = [
+    "api",
+    "dep:clap",
+    "dep:toml",
+    "dep:anyhow",
+    "dep:tracing-subscriber",
+    "dep:iced",
+    "dep:iced_layershell",
+    "dep:kitetsu-primitives",
+]
 
 [dependencies]
 # PulseAudio / PipeWire-pulse audio capture — §5.1 table.
@@ -75,6 +88,30 @@ futures-util = { version = "0.3", default-features = false, features = [
 ], optional = true }
 base64 = { version = "0.22", optional = true }
 
+# ── teleprompter binary deps (`teleprompter` feature) ─────────────────────────
+# clap: CLI parsing for the bin (--daemon / next / stop). toml: parse config.toml.
+# anyhow + tracing-subscriber are binary-edge only (CLAUDE.md §5) — optional so
+# the library default build pulls neither.
+clap = { version = "4", features = ["derive"], optional = true }
+toml = { version = "0.8", optional = true }
+anyhow = { version = "1", optional = true }
+tracing-subscriber = { version = "0.3", features = [
+    "env-filter",
+], optional = true }
+
+# ── teleprompter overlay (presenter) deps (`teleprompter` feature) ────────────
+# The iced render layer (kitetsu-primitives) drawn on a Wayland layer surface.
+# Exact pin for iced_layershell per CLAUDE.md §8; caret for iced.
+iced = { version = "0.14", features = ["svg", "advanced", "tokio"], optional = true }
+iced_layershell = { version = "=0.18.1", optional = true }
+kitetsu-primitives = { path = "../primitives", optional = true }
+
+# ── Binary: experimental live teleprompter ────────────────────────────────────
+[[bin]]
+name = "kitetsu"
+path = "src/main.rs"
+required-features = ["teleprompter"]
+
 [[example]]
 name = "moonshine_transcribe"
 required-features = ["onnx"]
@@ -98,6 +135,18 @@ required-features = ["api"]
 [[example]]
 name = "live_api_transcribe"
 required-features = ["api"]
+
+[[example]]
+name = "teleprompter_llm"
+required-features = ["teleprompter"]
+
+[[example]]
+name = "teleprompter_live"
+required-features = ["teleprompter"]
+
+[[example]]
+name = "teleprompter_chunk"
+required-features = ["teleprompter"]
 
 [dev-dependencies]
 # Used only at binary edges (examples) where anyhow is allowed.

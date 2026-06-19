@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# kitetsu-ctl — forward a command to a running kitetsu daemon.
+#
+# A thin passthrough: it resolves the kitetsu binary and forwards ALL arguments
+# verbatim, so its grammar is exactly `kitetsu`'s (clap validates). Tool actions
+# are namespaced, globals are top-level — same as the CLI:
+#   kitetsu-ctl ping
+#   kitetsu-ctl stop
+#   kitetsu-ctl teleprompter process
+#   kitetsu-ctl teleprompter toggle
+#
+# Bind to Hyprland keys, e.g.:
+#   bind = SUPER, N, exec, /path/to/kitetsu-ctl teleprompter process
+#   bind = SUPER, H, exec, /path/to/kitetsu-ctl teleprompter toggle
+#   bind = SUPER, S, exec, /path/to/kitetsu-ctl stop
+#
+# Binary resolution: $KITETSU_BIN, else `kitetsu` on PATH, else
+# ./target/debug/kitetsu next to this script.
+set -euo pipefail
+
+[ $# -ge 1 ] || { echo "usage: kitetsu-ctl <args…>   (forwarded to kitetsu)" >&2; exit 2; }
+
+here="$(dirname "$(readlink -f "$0")")"
+if [ -n "${KITETSU_BIN:-}" ]; then
+	bin="$KITETSU_BIN"
+elif command -v kitetsu >/dev/null 2>&1; then
+	bin="kitetsu"
+elif [ -x "$here/target/debug/kitetsu" ]; then
+	bin="$here/target/debug/kitetsu"
+else
+	echo "kitetsu-ctl: no kitetsu binary (set \$KITETSU_BIN, add to PATH, or build --debug)" >&2
+	exit 1
+fi
+
+exec "$bin" "$@"
