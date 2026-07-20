@@ -8,5 +8,6 @@ name = "kitetsu-primitives"
 path = "src/main.rs"
 
 [dependencies]
-iced = { version = "0.14", features = ["svg", "advanced"] }
-iced_layershell = "=0.18.1"
+# Slint on a wlr-layer-shell surface. Early-dev (AGPL-3.0) — pinned by exact git rev per CLAUDE.md §8.
+# layer-shika loads the .slint via the Slint interpreter at runtime, so no slint-build here.
+layer-shika = { git = "https://github.com/waydeerwm/layer-shika", rev = "0a684334056e2ffb680ff38618ae1ceddb319218" }

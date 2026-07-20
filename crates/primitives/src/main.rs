@@ -1,84 +1,26 @@
 //! Prototype launcher for the kitetsu DescriptionCard primitive.
-//! Spawns a single iced_layershell surface anchored top-left, renders one
-//! dummy card, and exits cleanly. No IPC, no LLM, no daemon — layout only.
+//! Shows the card on a wlr-layer-shell overlay surface (bottom-left, click/keyboard
+//! pass-through) via layer-shika, which loads `ui/card.slint` through the Slint
+//! interpreter. No IPC, no LLM, no daemon — surface + layout only.
+//!
+//! The layer-shell surface belongs in `presenter` in the real architecture; this
+//! scaffold just proves it renders. Dummy content lives in the `.slint` defaults;
+//! feeding a Rust spec via `set_property` is the next (spec-layer) iteration.
 
-mod card;
+use std::path::PathBuf;
 
-use iced::{Color, Element, Task, theme};
-use iced_layershell::application;
-use iced_layershell::reexport::{Anchor, KeyboardInteractivity};
-use iced_layershell::settings::{LayerShellSettings, Settings};
-use iced_layershell::to_layer_message;
+use layer_shika::prelude::*;
 
-use card::Card;
+fn main() -> Result<()> {
+    let ui = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui/card.slint");
 
-fn main() -> iced_layershell::Result {
-    application(init, namespace, update, view)
-        .settings(Settings {
-            layer_settings: LayerShellSettings {
-                // Generous surface; the card shrinks to its content within this.
-                size: Some((900, 700)),
-                // Bottom-left anchor with a 20 px margin on both edges.
-                anchor: Anchor::Bottom | Anchor::Left,
-                margin: (20, 0, 0, 20),
-                // Non-interactive: clicks that miss the card fall through to the desktop.
-                keyboard_interactivity: KeyboardInteractivity::None,
-                ..Default::default()
-            },
-            ..Default::default()
-        })
-        .style(|_state, _theme| theme::Style {
-            // Transparent surface so only the white card is visible over the desktop.
-            background_color: Color::TRANSPARENT,
-            text_color: Color::BLACK,
-        })
+    Shell::from_file(ui)
+        .surface("CardWindow")
+        .size(900, 420)
+        .anchor(AnchorEdges::empty().with_bottom().with_left())
+        .margin((0, 0, 16, 16)) // top, right, bottom, left
+        .layer(Layer::Overlay)
+        .keyboard_interactivity(KeyboardInteractivity::None)
+        .namespace("kitetsu")
         .run()
-}
-
-// ── Application state ─────────────────────────────────────────────────────────
-
-struct App {
-    card: Card,
-}
-
-// ── Messages ──────────────────────────────────────────────────────────────────
-
-/// User interactions with the card's action buttons.
-/// All are no-ops in this prototype; the enum exists so the buttons compile.
-/// #[to_layer_message] adds the LayerShell action variants required by the
-/// iced_layershell TryInto<LayerShellCustomActionWithId> bound. See PLAN §4.1.
-#[to_layer_message]
-#[derive(Debug, Clone)]
-pub enum Message {
-    Bookmark,
-    Share,
-    Menu,
-    Drag,
-}
-
-// ── iced_layershell program functions ─────────────────────────────────────────
-
-/// State factory — called once at startup.
-fn init() -> (App, Task<Message>) {
-    (
-        App {
-            card: Card::dummy(),
-        },
-        Task::none(),
-    )
-}
-
-/// Wayland namespace string (used by the compositor to identify this surface).
-fn namespace() -> String {
-    "kitetsu".into()
-}
-
-/// Message handler — buttons are no-ops for now.
-fn update(_app: &mut App, _msg: Message) -> Task<Message> {
-    Task::none()
-}
-
-/// View — delegates entirely to the card module.
-fn view(app: &App) -> Element<'_, Message> {
-    card::view(&app.card)
 }

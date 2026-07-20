@@ -1,0 +1,94 @@
+// Render layer for the DescriptionCard primitive — layout and styling only.
+// Loaded by layer-shika through the Slint interpreter (src/main.rs); the surface
+// itself (size/anchor/layer) is configured in Rust, not here.
+// Deliberately knows nothing about IPC, sessions, or the agent loop.
+
+// A transparent, hover-highlighting icon button. Visual only — no callback wired
+// in the scaffold, matching the no-op buttons of the old iced prototype.
+component IconButton inherits Rectangle {
+    in property <image> icon;
+    width: 38px;
+    height: 38px;
+    border-radius: 8px;
+    background: touch.has-hover ? #0000000f : transparent;
+    touch := TouchArea {
+        Image {
+            source: root.icon;
+            width: 22px;
+            height: 22px;
+        }
+    }
+}
+
+export component CardWindow inherits Window {
+    // Dummy content baked as defaults — the reactive spec→property path is a later iteration.
+    in property <string> header: "<Header from the llm>";
+    in property <string> model: "@ gemini-3.5-flash";
+    in property <string> body: "Hello Sir, I can see that you are currently reviewing an article on Supervised Fine Tuning (SFT) which is the process of taking a pre-trained machine learning model and training it further on a smaller, labeled dataset to adapt it for a specific task.\n\nPlease mention any thing I can assist you with?";
+
+    // Transparent so only the card shows over the desktop through the layer surface.
+    background: transparent;
+
+    VerticalLayout {
+        padding: 8px; // a little room so the card's drop-shadow isn't clipped
+        alignment: end; // sit at the bottom of the surface
+        HorizontalLayout {
+            alignment: start; // ...and the left
+            Rectangle {
+                max-width: 860px;
+                background: white;
+                border-radius: 20px;
+                drop-shadow-blur: 24px;
+                drop-shadow-color: #0000002e;
+                drop-shadow-offset-y: 4px;
+
+                VerticalLayout {
+                    padding: 28px;
+                    spacing: 20px;
+
+                    // ── Top bar: logo + header | spacer | action icons ──
+                    HorizontalLayout {
+                        spacing: 14px;
+
+                        Image {
+                            source: @image-url("../assets/logo-gemini.svg");
+                            width: 52px;
+                            height: 52px;
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 2px;
+                            Text {
+                                text: root.header;
+                                font-size: 22px;
+                                font-weight: 700;
+                                color: black;
+                            }
+                            Text {
+                                text: root.model;
+                                font-size: 17px;
+                                color: #5f6368;
+                            }
+                        }
+                        Rectangle { horizontal-stretch: 1; } // flexible spacer
+                        HorizontalLayout {
+                            spacing: 4px;
+                            IconButton { icon: @image-url("../assets/drag.svg"); }
+                            IconButton { icon: @image-url("../assets/bookmark.svg"); }
+                            IconButton { icon: @image-url("../assets/share.svg"); }
+                            IconButton { icon: @image-url("../assets/menu.svg"); }
+                        }
+                    }
+
+                    // ── Body: wrapped caption text ──
+                    Text {
+                        text: root.body;
+                        font-size: 19px;
+                        color: black;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+    }
+}
